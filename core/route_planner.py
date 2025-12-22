@@ -1,33 +1,48 @@
+# core/route_planner.py
+from __future__ import annotations
+from typing import Dict, Tuple, List, Optional
 import heapq
-import math
+from core.road_graph import RoadGraph, Node
 
 class RoutePlanner:
-    def __init__(self, graph):
+    def __init__(self, graph: RoadGraph):
         self.graph = graph
 
-    def heuristic(self, a, b):
-        # Euclidiana para empezar (luego se puede mejorar)
-        (x1, y1) = a
-        (x2, y2) = b
-        return math.dist((x1, y1), (x2, y2))
+    @staticmethod
+    def heuristic(a: Node, b: Node) -> float:
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
-    def astar(self, start, goal):
-        pq = [(0, start)]
-        came_from = {start: None}
-        cost_so_far = {start: 0}
+    def astar(self, start: Node, goal: Node) -> Tuple[List[Node], float]:
+        """
+        Devuelve (camino, coste_total). Si no hay camino, ([], inf)
+        """
+        pq: List[Tuple[float, Node]] = []
+        heapq.heappush(pq, (0.0, start))
+
+        came_from: Dict[Node, Optional[Node]] = {start: None}
+        cost_so_far: Dict[Node, float] = {start: 0.0}
 
         while pq:
             _, current = heapq.heappop(pq)
-
             if current == goal:
                 break
 
-            for neighbor, cost in self.graph.edges.get(current, []):
-                new_cost = cost_so_far[current] + cost
-                if neighbor not in cost_so_far or new_cost < cost_so_far[neighbor]:
-                    cost_so_far[neighbor] = new_cost
-                    priority = new_cost + self.heuristic(neighbor, goal)
-                    heapq.heappush(pq, (priority, neighbor))
-                    came_from[neighbor] = current
+            for nb, edge_cost in self.graph.neighbors(current):
+                new_cost = cost_so_far[current] + edge_cost
+                if nb not in cost_so_far or new_cost < cost_so_far[nb]:
+                    cost_so_far[nb] = new_cost
+                    priority = new_cost + self.heuristic(nb, goal)
+                    heapq.heappush(pq, (priority, nb))
+                    came_from[nb] = current
 
-        return came_from, cost_so_far
+        if goal not in came_from:
+            return [], float("inf")
+
+        # reconstruir camino
+        path = []
+        cur = goal
+        while cur is not None:
+            path.append(cur)
+            cur = came_from[cur]
+        path.reverse()
+        return path, cost_so_far[goal]
