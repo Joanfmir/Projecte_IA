@@ -38,23 +38,20 @@ class Simulator:
         self.cfg = cfg
         self.rng = random.Random(cfg.seed)
 
-        # 1) Generar ciudad: buildings + avenues (para dibujar recto)
+        # Avenidas (para el visual)
         self.avenues: List[dict] = []
+
+        # 1) Generar ciudad: buildings (obstáculos) + avenues (decoración recta)
         self.buildings: Set[Node] = self._generate_urban_buildings()
 
         # 2) Grafo con obstáculos
-        self.graph = RoadGraph(
-            cfg.width, cfg.height,
-            base_cost=1.0,
-            seed=cfg.seed,
-            blocked=self.buildings
-        )
+        self.graph = RoadGraph(cfg.width, cfg.height, base_cost=1.0, seed=cfg.seed, blocked=self.buildings)
         self.planner = RoutePlanner(self.graph)
 
         self.om = OrderManager()
         self.fm = FleetManager()
 
-        # Restaurante: buscar una celda caminable cerca del centro
+        # Restaurante: celda caminable cerca del centro
         self.restaurant: Node = self._nearest_walkable((cfg.width // 2, cfg.height // 2))
         self.assigner = AssignmentEngine(self.planner, restaurant_pos=self.restaurant)
 
@@ -74,17 +71,15 @@ class Simulator:
     def _generate_urban_buildings(self) -> Set[Node]:
         """
         Ciudad:
-        - manzanas sólidas (sin agujeros)
-        - calles ortogonales (por block_size + street_width)
-        - 1-3 avenidas diagonales rectas random (se guardan en self.avenues)
+        - Manzanas sólidas (sin agujeros)
+        - Calles ortogonales (block_size + street_width)
+        - 1-3 avenidas diagonales rectas random
         """
         W, H = self.cfg.width, self.cfg.height
         bs = self.cfg.block_size
         sw = self.cfg.street_width
 
         buildings: Set[Node] = set()
-
-        # ✅ reset avenidas aquí (correcto)
         self.avenues = []
 
         # 1) Manzanas sólidas
@@ -103,7 +98,7 @@ class Simulator:
             buildings.discard((0, y))
             buildings.discard((W - 1, y))
 
-        # 3) Avenidas diagonales "rectas" random
+        # 3) Avenidas diagonales random (la lógica las abre como “celdas calle”)
         n_avenues = self.rng.choice([1, 2, 2, 3])
         avenue_width = max(1, sw)
 
@@ -116,13 +111,12 @@ class Simulator:
                 m = self.rng.choice(possible_slopes)
             used.add(m)
 
-            # offset b random para que no sea siempre X
             b = self.rng.uniform(-H * 0.5, H * 1.5)
 
-            # ✅ guardar para que el visualizer lo dibuje como línea recta
+            # Guardar para dibujar recto en el visualizer (solo visual)
             self.avenues.append({"m": m, "b": b, "w": avenue_width})
 
-            # liberar celdas (calles) siguiendo esa recta (forma “grid” para la lógica)
+            # Abrir calle siguiendo la recta (en grid)
             for x in range(W):
                 y_center = m * x + b
                 y_round = int(round(y_center))
@@ -131,7 +125,7 @@ class Simulator:
                     if 0 <= y < H:
                         buildings.discard((x, y))
 
-            # continuidad vertical (para pendientes grandes)
+            # continuidad vertical para pendientes grandes
             if abs(m) > 0.01:
                 for y in range(H):
                     x_center = (y - b) / m
@@ -153,8 +147,8 @@ class Simulator:
 
         while q:
             x, y = q.popleft()
-            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                nb = (x + dx, y + dy)
+            for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
+                nb = (x+dx, y+dy)
                 if nb in seen:
                     continue
                 if 0 <= nb[0] < self.cfg.width and 0 <= nb[1] < self.cfg.height:
@@ -174,17 +168,29 @@ class Simulator:
         return self.restaurant
 
     # -------------------
-    # VISUAL
+    # VISUAL / SNAPSHOT
     # -------------------
     def snapshot(self) -> dict:
         pending = self.om.get_pending_orders()
         riders = self.fm.get_all()
 
+        # métricas delivered (para train/eval)
+        delivered_total = 0
+        delivered_ontime = 0
+        delivered_late = 0
+        for o in self.om.orders:
+            if o.delivered_at is not None:
+                delivered_total += 1
+                if o.delivered_at <= o.deadline:
+                    delivered_ontime += 1
+                else:
+                    delivered_late += 1
+
         return {
             "t": self.t,
             "restaurant": self.restaurant,
             "buildings": list(self.buildings),
-            "avenues": list(self.avenues),  # ✅ AÑADIDO
+            "avenues": list(self.avenues),
             "pending_orders": [(o.dropoff, o.priority, o.deadline, o.assigned_to) for o in pending],
             "riders": [
                 {
@@ -201,6 +207,9 @@ class Simulator:
             "blocked": self.graph.count_blocked(),
             "width": self.cfg.width,
             "height": self.cfg.height,
+            "delivered_total": delivered_total,
+            "delivered_ontime": delivered_ontime,
+            "delivered_late": delivered_late,
         }
 
     # -------------------

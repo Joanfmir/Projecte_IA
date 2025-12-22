@@ -63,13 +63,11 @@ class Visualizer:
         # ✅ construir leyenda UNA VEZ
         self._build_legend()
     def _draw_avenues(self):
-
         W, H = self.W, self.H
 
         for av in self.avenues:
             m = av["m"]
             b = av["b"]
-            w = int(av.get("w", 1))
 
             xs, ys = [], []
             for x in range(W):
@@ -79,15 +77,9 @@ class Visualizer:
                     ys.append(y)
 
             if len(xs) >= 2:
-                # línea principal
-                self.ax.plot(xs, ys, linewidth=3.0, alpha=0.25)
+                # Una sola línea, gris suave
+                self.ax.plot(xs, ys, linewidth=4.0, alpha=0.12, color="#666666")
 
-                # "ancho" de avenida: líneas paralelas
-                for k in range(1, w + 1):
-                    ys_up = [yy + k for yy in ys]
-                    ys_dn = [yy - k for yy in ys]
-                    self.ax.plot(xs, ys_up, linewidth=2.0, alpha=0.12)
-                    self.ax.plot(xs, ys_dn, linewidth=2.0, alpha=0.12)
 
 
     def _build_legend(self):
@@ -137,10 +129,16 @@ class Visualizer:
 
     def _update(self, _frame):
         if self.policy is not None:
-            s = self.sim.compute_state()
-            a = self.policy.choose_action(s)
+            snap = self.sim.snapshot()
+            # si la policy soporta snapshot (Q-learning)
+            if hasattr(self.policy, "choose_action_snapshot"):
+                a = self.policy.choose_action_snapshot(snap)
+            else:
+                s = self.sim.compute_state()
+                a = self.policy.choose_action(s)
         else:
             a = A_ASSIGN_ANY_NEAREST
+
 
         _, done = self.sim.step(a)
 
