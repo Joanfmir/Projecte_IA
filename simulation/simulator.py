@@ -1,5 +1,6 @@
 # simulation/simulator.py
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Tuple, Optional, List, Set
 import random
@@ -8,7 +9,7 @@ import statistics
 from core.road_graph import RoadGraph
 from core.route_planner import RoutePlanner
 from core.order_manager import OrderManager, Order
-from core.fleet_manager import FleetManager
+from core.fleet_manager import FleetManager, Rider
 from core.assignment_engine import AssignmentEngine
 from core.dispatch_policy import (
     make_state,
@@ -24,13 +25,17 @@ class SimConfig:
     height: int = 25
     n_riders: int = 4
     episode_len: int = 400
-    order_spawn_prob: float = 0.35
+    order_spawn_prob: float = 0.40
     max_eta: int = 55
     seed: int = 7
 
     # urban layout
-    block_size: int = 5      # tamaño manzana (edificio)
-    street_width: int = 1    # ancho calles
+    block_size: int = 5
+    street_width: int = 1
+
+    # cierres de calles (lo activaremos luego)
+    road_closure_prob: float = 0.0
+    road_closures_per_event: int = 1
 
 
 class Simulator:
@@ -38,13 +43,9 @@ class Simulator:
         self.cfg = cfg
         self.rng = random.Random(cfg.seed)
 
-        # Avenidas (para el visual)
         self.avenues: List[dict] = []
-
-        # 1) Generar ciudad: buildings (obstáculos) + avenues (decoración recta)
         self.buildings: Set[Node] = self._generate_urban_buildings()
 
-        # 2) Grafo con obstáculos
         self.graph = RoadGraph(cfg.width, cfg.height, base_cost=1.0, seed=cfg.seed, blocked=self.buildings)
         self.planner = RoutePlanner(self.graph)
 
@@ -60,7 +61,9 @@ class Simulator:
 
         for _ in range(cfg.n_riders):
             sp = self.rng.choice([0.9, 1.0, 1.1])
-            self.fm.add_rider(position=self.restaurant, speed=sp)
+            r = self.fm.add_rider(position=self.restaurant, speed=sp)
+            # por si tu FleetManager no lo inicializa
+            r.available = True
 
     def reset(self) -> None:
         self.__init__(self.cfg)
@@ -73,7 +76,7 @@ class Simulator:
         Ciudad:
         - Manzanas sólidas (sin agujeros)
         - Calles ortogonales (block_size + street_width)
-        - 1-3 avenidas diagonales rectas random
+        - 1-3 avenidas diagonales random (se abren en el grid)
         """
         W, H = self.cfg.width, self.cfg.height
         bs = self.cfg.block_size
@@ -82,7 +85,7 @@ class Simulator:
         buildings: Set[Node] = set()
         self.avenues = []
 
-        # 1) Manzanas sólidas
+        # manzanas sólidas
         step = bs + sw
         for bx in range(0, W, step):
             for by in range(0, H, step):
@@ -90,7 +93,7 @@ class Simulator:
                     for y in range(by, min(by + bs, H)):
                         buildings.add((x, y))
 
-        # 2) Borde exterior siempre calle
+        # borde exterior siempre calle
         for x in range(W):
             buildings.discard((x, 0))
             buildings.discard((x, H - 1))
@@ -98,7 +101,7 @@ class Simulator:
             buildings.discard((0, y))
             buildings.discard((W - 1, y))
 
-        # 3) Avenidas diagonales random (la lógica las abre como “celdas calle”)
+        # avenidas diagonales random
         n_avenues = self.rng.choice([1, 2, 2, 3])
         avenue_width = max(1, sw)
 
@@ -112,24 +115,18 @@ class Simulator:
             used.add(m)
 
             b = self.rng.uniform(-H * 0.5, H * 1.5)
-
-            # Guardar para dibujar recto en el visualizer (solo visual)
             self.avenues.append({"m": m, "b": b, "w": avenue_width})
 
-            # Abrir calle siguiendo la recta (en grid)
             for x in range(W):
-                y_center = m * x + b
-                y_round = int(round(y_center))
+                y_round = int(round(m * x + b))
                 for dy in range(-avenue_width, avenue_width + 1):
                     y = y_round + dy
                     if 0 <= y < H:
                         buildings.discard((x, y))
 
-            # continuidad vertical para pendientes grandes
             if abs(m) > 0.01:
                 for y in range(H):
-                    x_center = (y - b) / m
-                    x_round = int(round(x_center))
+                    x_round = int(round((y - b) / m))
                     for dx in range(-avenue_width, avenue_width + 1):
                         x = x_round + dx
                         if 0 <= x < W:
@@ -159,22 +156,114 @@ class Simulator:
 
         return (self.cfg.width // 2, self.cfg.height // 2)
 
-    def _random_walkable_cell(self) -> Node:
-        for _ in range(5000):
+    # ✅ elegir SOLO drops alcanzables desde restaurante y != restaurante
+    def _random_walkable_cell(self) -> Optional[Node]:
+        for _ in range(6000):
             x = self.rng.randrange(self.cfg.width)
             y = self.rng.randrange(self.cfg.height)
-            if self.graph.is_walkable((x, y)):
-                return (x, y)
-        return self.restaurant
+            cell = (x, y)
+            if cell == self.restaurant:
+                continue
+            if not self.graph.is_walkable(cell):
+                continue
+            path, cost = self.planner.astar(self.restaurant, cell)
+            if path and cost != float("inf") and len(path) >= 2:
+                return cell
+        return None
 
     # -------------------
-    # VISUAL / SNAPSHOT
+    # PLANIFICACIÓN (2 pedidos)
+    # -------------------
+    def _get_order(self, order_id: int) -> Optional[Order]:
+        for o in self.om.orders:
+            if o.order_id == order_id:
+                return o
+        return None
+
+    def _sorted_drop_queue(self, rider: Rider) -> List[int]:
+        valid: List[Order] = []
+        for oid in rider.assigned_order_ids:
+            o = self._get_order(oid)
+            if o is not None and o.is_pending():
+                # evita drop = restaurante (por seguridad)
+                if o.dropoff == self.restaurant:
+                    continue
+                valid.append(o)
+
+        if not valid:
+            return []
+
+        scored = []
+        for o in valid:
+            _, c = self.planner.astar(self.restaurant, o.dropoff)
+            scored.append((float(c), o.order_id))
+        scored.sort(key=lambda x: x[0])
+        return [oid for _, oid in scored]
+
+    def _rebuild_plan_for_rider(self, rider: Rider) -> None:
+        # limpia pedidos no pendientes
+        rider.assigned_order_ids = [
+            oid for oid in rider.assigned_order_ids
+            if (self._get_order(oid) and self._get_order(oid).is_pending())
+        ]
+
+        # si no hay pedidos -> volver al restaurante (o quedar libre si ya está)
+        if not rider.assigned_order_ids:
+            rider.delivery_queue = []
+            rider.has_picked_up = False
+
+            if rider.position != self.restaurant:
+                rider.available = False
+                rider.waypoints = [self.restaurant]
+                rider.waypoint_idx = 0
+                path, _ = self.planner.astar(rider.position, self.restaurant)
+                rider.route = path[1:] if path else []
+            else:
+                rider.available = True
+                rider.waypoints = []
+                rider.waypoint_idx = 0
+                rider.route = []
+            return
+
+        # hay pedidos -> NO está disponible
+        rider.available = False
+
+        # drops ordenados
+        rider.delivery_queue = self._sorted_drop_queue(rider)
+
+        waypoints: List[Node] = []
+
+        # ✅ si NO ha recogido, primer waypoint restaurante
+        if not rider.has_picked_up:
+            waypoints.append(self.restaurant)
+
+        # drops
+        for oid in rider.delivery_queue:
+            o = self._get_order(oid)
+            if o is not None:
+                waypoints.append(o.dropoff)
+
+        # volver al restaurante al final
+        waypoints.append(self.restaurant)
+
+        rider.waypoints = waypoints
+        rider.waypoint_idx = 0
+
+        tgt = rider.current_target()
+        if tgt is None:
+            rider.route = []
+            return
+
+        path, _ = self.planner.astar(rider.position, tgt)
+        rider.route = path[1:] if path else []
+
+    # -------------------
+    # SNAPSHOT
     # -------------------
     def snapshot(self) -> dict:
         pending = self.om.get_pending_orders()
         riders = self.fm.get_all()
 
-        # métricas delivered (para train/eval)
         delivered_total = 0
         delivered_ontime = 0
         delivered_late = 0
@@ -198,7 +287,12 @@ class Simulator:
                     "pos": r.position,
                     "route": list(r.route),
                     "fatigue": r.fatigue,
-                    "carrying": (r.assigned_order_id if r.has_picked_up else None),
+                    "carrying": (r.delivery_queue[0] if (r.has_picked_up and r.delivery_queue) else None),
+                    "assigned": list(r.assigned_order_ids),
+                    "picked": r.has_picked_up,
+                    "waypoints": list(r.waypoints),
+                    "wp_idx": r.waypoint_idx,
+                    "available": r.available,
                 }
                 for r in riders
             ],
@@ -218,6 +312,8 @@ class Simulator:
     def maybe_spawn_order(self) -> None:
         if self.rng.random() < self.cfg.order_spawn_prob:
             drop = self._random_walkable_cell()
+            if drop is None:
+                return
             prio = 2 if self.rng.random() < 0.15 else 1
             max_eta = self.cfg.max_eta if prio == 1 else int(self.cfg.max_eta * 0.6)
 
@@ -235,56 +331,69 @@ class Simulator:
             self.graph.set_traffic_level(self.traffic_level)
 
     # -------------------
-    # Helpers orders
-    # -------------------
-    def _get_order(self, order_id: int) -> Optional[Order]:
-        for o in self.om.orders:
-            if o.order_id == order_id:
-                return o
-        return None
-
-    # -------------------
-    # Movimiento (pickup/dropoff/return)
+    # Movimiento (pickup/drop/return)
     # -------------------
     def move_riders_one_tick(self) -> List[Order]:
         delivered_now: List[Order] = []
 
         for r in self.fm.get_all():
+            # si tiene pedidos pero no tiene plan, lo reconstruimos
+            if r.assigned_order_ids and not r.waypoints:
+                self._rebuild_plan_for_rider(r)
+
+            # mover 1 paso
             if r.route:
                 nxt = r.route.pop(0)
                 r.position = nxt
                 r.distance_travelled += 1.0
                 r.fatigue += 0.05
 
-            target = r.current_target()
-            if target is not None and r.position == target and r.has_task():
-                o = self._get_order(r.assigned_order_id)
+            tgt = r.current_target()
+            if tgt is None:
+                continue
 
-                if r.waypoint_idx == 0:
+            if r.position == tgt and r.waypoints:
+                # (A) llegar al restaurante sin haber recogido => recoger
+                if tgt == self.restaurant and (not r.has_picked_up) and r.assigned_order_ids:
                     r.has_picked_up = True
-                    r.waypoint_idx = 1
+                    r.waypoint_idx += 1
 
-                elif r.waypoint_idx == 1:
+                # (B) llegar a drop sin haber recogido => replan (debería no pasar)
+                elif tgt != self.restaurant and (not r.has_picked_up):
+                    self._rebuild_plan_for_rider(r)
+
+                # (C) drop con pickup hecho => entregar el siguiente
+                elif tgt != self.restaurant and r.has_picked_up and r.delivery_queue:
+                    oid = r.delivery_queue.pop(0)
+                    o = self._get_order(oid)
+
                     if o is not None and o.is_pending():
                         self.om.mark_delivered(o.order_id, now=self.t)
                         delivered_now.append(o)
                         r.deliveries_done += 1
-                    r.waypoint_idx = 2
 
-                elif r.waypoint_idx == 2:
-                    r.assigned_order_id = None
+                    if oid in r.assigned_order_ids:
+                        r.assigned_order_ids.remove(oid)
+
+                    r.waypoint_idx += 1
+
+                # (D) volver al restaurante sin pedidos => quedar disponible
+                elif tgt == self.restaurant and r.has_picked_up and (not r.assigned_order_ids):
+                    r.available = True
                     r.has_picked_up = False
+                    r.delivery_queue = []
                     r.waypoints = []
                     r.waypoint_idx = 0
                     r.route = []
-                    r.available = True
                     continue
 
-                if r.has_task():
-                    new_target = r.current_target()
-                    if new_target is not None:
-                        path, _ = self.planner.astar(r.position, new_target)
-                        r.route = path[1:] if path else []
+                # recalcular al siguiente waypoint
+                nxt_tgt = r.current_target()
+                if nxt_tgt is not None:
+                    path, _ = self.planner.astar(r.position, nxt_tgt)
+                    r.route = path[1:] if path else []
+                else:
+                    self._rebuild_plan_for_rider(r)
 
         return delivered_now
 
@@ -296,7 +405,9 @@ class Simulator:
         urgent = [o for o in self.om.get_pending_orders() if o.is_urgent(self.t) or o.priority > 1]
         urgent_ratio = (len(urgent) / pending) if pending > 0 else 0.0
 
-        free = len(self.fm.get_available_riders())
+        # “free” = riders que pueden aceptar más (capacidad)
+        free = len([r for r in self.fm.get_all() if r.can_take_more()])
+
         fatigues = [r.fatigue for r in self.fm.get_all()]
         avg_fat = sum(fatigues) / len(fatigues) if fatigues else 0.0
 
@@ -341,6 +452,7 @@ class Simulator:
             if pick:
                 o, r = pick
                 self.assigner.assign(o, r)
+                self._rebuild_plan_for_rider(r)
             return
 
         if action == A_ASSIGN_ANY_NEAREST:
@@ -348,6 +460,7 @@ class Simulator:
             if pick:
                 o, r = pick
                 self.assigner.assign(o, r)
+                self._rebuild_plan_for_rider(r)
             return
 
         if action == A_WAIT:
@@ -355,7 +468,7 @@ class Simulator:
 
         if action == A_REPLAN_TRAFFIC:
             for r in self.fm.get_all():
-                if r.has_task():
+                if r.waypoints:
                     self.assigner.replan_current_leg(r)
             return
 
