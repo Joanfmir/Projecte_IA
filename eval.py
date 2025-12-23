@@ -3,10 +3,11 @@ from __future__ import annotations
 import statistics
 
 from simulation.simulator import Simulator, SimConfig
-from core.dispatch_policy import A_ASSIGN_ANY_NEAREST, A_ASSIGN_URGENT_NEAREST, A_WAIT, A_REPLAN_TRAFFIC
+from core.dispatch_policy import (
+    A_ASSIGN_ANY_NEAREST, A_ASSIGN_URGENT_NEAREST, A_WAIT, A_REPLAN_TRAFFIC
+)
 from core.state_encoding import StateEncoder
 from core.q_learning import QLearningAgent
-
 
 ACTIONS = [A_ASSIGN_URGENT_NEAREST, A_ASSIGN_ANY_NEAREST, A_WAIT, A_REPLAN_TRAFFIC]
 
@@ -19,7 +20,7 @@ def run_episode(sim: Simulator, policy_fn):
     done = False
     while not done:
         snap = sim.snapshot()
-        pending_sum += len(snap["pending_orders"])
+        pending_sum += len(snap.get("pending_orders", []))
         steps += 1
 
         a = policy_fn(sim, snap)
@@ -36,8 +37,8 @@ def run_episode(sim: Simulator, policy_fn):
     }
 
 
-def eval_all(n_episodes: int = 40, q_path: str = "artifacts/qtable.pkl"):
-    cfg = SimConfig(
+def eval_all(n_episodes: int = 40, q_path: str = "artifacts/qtable.pkl", base_seed: int = 999):
+    base_cfg = SimConfig(
         width=45, height=35,
         n_riders=6,
         episode_len=900,
@@ -45,12 +46,12 @@ def eval_all(n_episodes: int = 40, q_path: str = "artifacts/qtable.pkl"):
         max_eta=80,
         block_size=6,
         street_width=2,
-        seed=7,
+        seed=base_seed,
     )
 
     encoder = StateEncoder()
     agent = QLearningAgent.load(q_path)
-    agent.epsilon = 0.0  # evaluación: greedy
+    agent.epsilon = 0.0  # greedy en evaluación
 
     def heuristic_policy(sim, snap):
         return A_ASSIGN_ANY_NEAREST
@@ -62,7 +63,10 @@ def eval_all(n_episodes: int = 40, q_path: str = "artifacts/qtable.pkl"):
     results_h = []
     results_q = []
 
-    for _ in range(n_episodes):
+    for i in range(n_episodes):
+        cfg = SimConfig(**base_cfg.__dict__)
+        cfg.seed = base_seed + i  # ✅ cada episodio eval con mapa/azar distinto
+
         results_h.append(run_episode(Simulator(cfg), heuristic_policy))
         results_q.append(run_episode(Simulator(cfg), q_policy))
 
