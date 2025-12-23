@@ -15,7 +15,7 @@ from core.q_learning import QLearningAgent, QConfig
 ACTIONS = [A_ASSIGN_URGENT_NEAREST, A_ASSIGN_ANY_NEAREST, A_WAIT, A_REPLAN_TRAFFIC]
 
 
-def train(n_episodes: int = 600, out_dir: str = "artifacts", base_seed: int = 7):
+def train(n_episodes: int = 300, out_dir: str = "artifacts", base_seed: int = 7):
     os.makedirs(out_dir, exist_ok=True)
 
     # ⚙️ Config base (NO fijamos seed aquí para todos los episodios)

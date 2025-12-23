@@ -25,7 +25,7 @@ class SimConfig:
     height: int = 25
     n_riders: int = 4
     episode_len: int = 400
-    order_spawn_prob: float = 0.40
+    order_spawn_prob: float = 0.05
     max_eta: int = 55
     seed: int = 7
 
@@ -58,6 +58,9 @@ class Simulator:
 
         self.t = 0
         self.traffic_level = "low"
+        self.traffic_mode = "zones"
+        self.traffic_zones = {0: "low", 1: "low", 2: "low", 3: "low"}
+
 
         for _ in range(cfg.n_riders):
             sp = self.rng.choice([0.9, 1.0, 1.1])
@@ -277,6 +280,8 @@ class Simulator:
 
         return {
             "t": self.t,
+            "traffic_zones": dict(getattr(self, "traffic_zones", {})),
+
             "restaurant": self.restaurant,
             "buildings": list(self.buildings),
             "avenues": list(self.avenues),
@@ -327,12 +332,29 @@ class Simulator:
 
     def maybe_change_traffic(self) -> None:
         if self.t % 60 == 0 and self.t > 0:
-            self.traffic_level = self.rng.choice(["low", "medium", "high"])
-            self.graph.set_traffic_level(self.traffic_level)
+            if getattr(self, "traffic_mode", "zones") == "zones":
+                # ✅ cada zona puede ser distinta (random independiente)
+                levels = ["low", "medium", "high"]
+                self.traffic_zones = {
+                    0: self.rng.choice(levels),
+                    1: self.rng.choice(levels),
+                    2: self.rng.choice(levels),
+                    3: self.rng.choice(levels),
+                }
 
-    # -------------------
-    # Movimiento (pickup/drop/return)
-    # -------------------
+                # (Opcional) evita que salgan las 4 iguales demasiado a menudo:
+                if len(set(self.traffic_zones.values())) == 1:
+                    # fuerza que al menos una cambie
+                    z = self.rng.choice([0, 1, 2, 3])
+                    self.traffic_zones[z] = self.rng.choice([l for l in levels if l != self.traffic_zones[z]])
+
+                self.graph.set_zone_traffic(self.traffic_zones)
+                self.traffic_level = "mixed"
+            else:
+                # modo antiguo global
+                self.traffic_level = self.rng.choice(["low", "medium", "high"])
+                self.graph.set_traffic_level(self.traffic_level)
+
     def move_riders_one_tick(self) -> List[Order]:
         delivered_now: List[Order] = []
 
