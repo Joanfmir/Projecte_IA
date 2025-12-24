@@ -250,6 +250,8 @@ class Visualizer:
             rid = r["id"]
             x, y = r["pos"]
             fat = r.get("fatigue", 0.0)
+            rew = r.get("reward", 0.0)
+
             avail = r.get("available", True)
             route_len = len(r.get("route", []))
 

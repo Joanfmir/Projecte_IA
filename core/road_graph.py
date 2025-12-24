@@ -1,7 +1,7 @@
 # core/road_graph.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Set, Tuple
+from typing import Dict, Iterable, Optional, Set, Tuple, List
 import random
 import math
 
@@ -24,11 +24,9 @@ class EdgeInfo:
 
 class RoadGraph:
     """
-    Grid graph con obstáculos (blocked=edificios) y movimientos 8-direcciones.
-    Soporta:
-      - cierres de calles (edges closed)
-      - tráfico global (set_traffic_level)
-      - tráfico por zonas (set_zone_traffic)
+    Grid graph con obstáculos (blocked=edificios) y movimientos 8-direcciones (diagonales).
+    - Si una celda está en blocked: NO se puede pisar.
+    - Diagonal tiene coste sqrt(2) respecto a ortogonal.
     """
 
     def __init__(
@@ -44,6 +42,8 @@ class RoadGraph:
         self.rng = random.Random(seed)
 
         self.blocked: Set[Node] = set(blocked) if blocked else set()
+
+        # nodos transitables
         self.nodes: Set[Node] = {
             (x, y)
             for x in range(width)
@@ -51,12 +51,12 @@ class RoadGraph:
             if (x, y) not in self.blocked
         }
 
+        # aristas dirigidas
         self.edges: Dict[Edge, EdgeInfo] = {}
         self._build_grid(base_cost)
 
-        # tráfico actual (para snapshot/debug)
-        self.global_traffic_level: str = "low"
-        self.zone_levels: Dict[int, str] = {0: "low", 1: "low", 2: "low", 3: "low"}
+        # para visual/depuración (opcional)
+        self.last_zone_levels: Optional[Dict[int, str]] = None
 
     def _build_grid(self, base_cost: float) -> None:
         dirs = [
@@ -78,6 +78,7 @@ class RoadGraph:
             (1, 0), (-1, 0), (0, 1), (0, -1),
             (1, 1), (1, -1), (-1, 1), (-1, -1),
         ]
+
         x, y = node
         for dx, dy in dirs:
             nb = (x + dx, y + dy)
@@ -95,58 +96,47 @@ class RoadGraph:
             step_mult = math.sqrt(2) if (dx != 0 and dy != 0) else 1.0
             yield nb, base * step_mult
 
-    # -------------------------
-    # Tráfico
-    # -------------------------
-    @staticmethod
-    def _mult_from_level(level: str) -> float:
-        return {"low": 1.0, "medium": 1.5, "high": 2.2}.get(level, 1.0)
-
+    # -------- tráfico y cierres --------
     def set_traffic_level(self, level: str) -> None:
-        """Tráfico global (si lo quieres usar sin zonas)."""
-        self.global_traffic_level = level
-        mult = self._mult_from_level(level)
+        """Tráfico global (si lo usas)."""
+        mult = {"low": 1.0, "medium": 1.5, "high": 2.2}.get(level, 1.0)
         for info in self.edges.values():
             if not info.closed:
                 info.traffic_mult = mult
+        self.last_zone_levels = None
 
-    def _zone_of_node(self, n: Node) -> int:
-        """Zonas: 0 TL, 1 TR, 2 BL, 3 BR."""
-        x, y = n
-        midx = self.width / 2.0
-        midy = self.height / 2.0
+    def _zone_of(self, node: Node) -> int:
+        """4 zonas por cuadrantes: 0 TL, 1 TR, 2 BL, 3 BR."""
+        x, y = node
+        midx = self.width // 2
+        midy = self.height // 2
         left = x < midx
-        bottom = y < midy
-        if left and not bottom:
+        top = y >= midy
+        if left and top:
             return 0  # TL
-        if (not left) and (not bottom):
+        if (not left) and top:
             return 1  # TR
-        if left and bottom:
+        if left and (not top):
             return 2  # BL
         return 3      # BR
 
     def set_zone_traffic(self, zone_levels: Dict[int, str]) -> None:
         """
-        Tráfico por zonas: aplica un multiplicador diferente a cada arista según
-        la zona donde cae (usamos el punto medio aproximado: el nodo origen).
+        Tráfico por zonas (cuadrantes).
+        zone_levels: {0:"high",1:"medium",2:"medium",3:"low"} por ejemplo.
+        El multiplicador se aplica según la zona del nodo ORIGEN de la arista.
         """
-        # guarda niveles
-        self.zone_levels = {0: "low", 1: "low", 2: "low", 3: "low"}
-        for z, lvl in zone_levels.items():
-            if z in self.zone_levels:
-                self.zone_levels[z] = lvl
+        mult_map = {"low": 1.0, "medium": 1.5, "high": 2.2}
+        # guardo por si quieres verlo en snapshot
+        self.last_zone_levels = dict(zone_levels)
 
-        # aplica a edges
         for (a, b), info in self.edges.items():
             if info.closed:
                 continue
-            z = self._zone_of_node(a)
-            lvl = self.zone_levels.get(z, "low")
-            info.traffic_mult = self._mult_from_level(lvl)
+            z = self._zone_of(a)
+            lvl = zone_levels.get(z, "low")
+            info.traffic_mult = mult_map.get(lvl, 1.0)
 
-    # -------------------------
-    # Cierres
-    # -------------------------
     def random_road_incidents(self, n_closures: int) -> None:
         all_edges = list(self.edges.keys())
         self.rng.shuffle(all_edges)
@@ -167,5 +157,12 @@ class RoadGraph:
     def count_blocked(self) -> int:
         return len(self.blocked)
 
-    def get_closed_edges(self) -> list[Edge]:
-        return [(a, b) for (a, b), info in self.edges.items() if info.closed]
+    def get_closed_edges_sample(self, max_edges: int = 200) -> List[Edge]:
+        """Para el visual: devuelve una muestra de aristas cerradas (dirigidas)."""
+        out: List[Edge] = []
+        for (a, b), info in self.edges.items():
+            if info.closed:
+                out.append((a, b))
+                if len(out) >= max_edges:
+                    break
+        return out

@@ -10,38 +10,35 @@ Node = Tuple[int, int]
 class Rider:
     rider_id: int
     position: Node
-    speed: float = 1.0
-
-    # disponibilidad
+    speed: float = 1.0  # (por ahora no lo usamos como “pasos por tick”, pero lo dejamos)
     available: bool = True
 
-    # ✅ fase 2: hasta 2 pedidos a la vez
-    capacity: int = 2
-    assigned_order_ids: List[int] = field(default_factory=list)
-
-    # ruta actual (lista de celdas)
-    route: List[Node] = field(default_factory=list)
-
-    # waypoints: [restaurante pickup, drop1, drop2, restaurante return]
-    waypoints: List[Node] = field(default_factory=list)
-    waypoint_idx: int = 0
-
-    # cola de entregas (solo los drops, en orden)
-    delivery_queue: List[int] = field(default_factory=list)
-
-    # pickup hecho para el “batch” actual
-    has_picked_up: bool = False
-
-    # stats
+    # --- Métricas ---
     fatigue: float = 0.0
     distance_travelled: float = 0.0
     deliveries_done: int = 0
+
+    # --- Fase 2: 2 pedidos a la vez ---
+    capacity: int = 2
+    assigned_order_ids: List[int] = field(default_factory=list)
+
+    # Plan / navegación
+    waypoints: List[Node] = field(default_factory=list)
+    waypoint_idx: int = 0
+    route: List[Node] = field(default_factory=list)
+
+    # Estado pickup/drop
+    has_picked_up: bool = False
+    delivery_queue: List[int] = field(default_factory=list)
+
+    # Fatiga avanzada
+    resting: bool = False  # si está descansando (bloquea movimiento)
 
     def can_take_more(self) -> bool:
         return len(self.assigned_order_ids) < self.capacity
 
     def has_task(self) -> bool:
-        return len(self.assigned_order_ids) > 0 and len(self.waypoints) > 0
+        return len(self.assigned_order_ids) > 0 or len(self.waypoints) > 0 or len(self.route) > 0
 
     def current_target(self) -> Optional[Node]:
         if not self.waypoints:
@@ -57,7 +54,7 @@ class FleetManager:
         self._next_id = 1
 
     def add_rider(self, position: Node, speed: float = 1.0) -> Rider:
-        r = Rider(rider_id=self._next_id, position=position, speed=speed)
+        r = Rider(rider_id=self._next_id, position=position, speed=speed, available=True)
         self._next_id += 1
         self._riders.append(r)
         return r
@@ -66,5 +63,6 @@ class FleetManager:
         return list(self._riders)
 
     def get_available_riders(self) -> List[Rider]:
-        # para el assigner: “eligibles” base (luego él filtra más)
-        return [r for r in self._riders if r.can_take_more()]
+        # “available” aquí significa “puede recibir asignación”
+        # (si está descansando, NO queremos asignarle más)
+        return [r for r in self._riders if r.available and (not r.resting)]
