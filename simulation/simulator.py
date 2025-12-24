@@ -24,7 +24,7 @@ class SimConfig:
     height: int = 25
     n_riders: int = 4
     episode_len: int = 300
-    order_spawn_prob: float = 0.35
+    order_spawn_prob: float = 0.15
     max_eta: int = 55
     seed: int = 7
 

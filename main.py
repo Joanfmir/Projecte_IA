@@ -41,7 +41,7 @@ def parse_args():
     p.add_argument("--height", type=int, default=35)
     p.add_argument("--riders", type=int, default=5)
     p.add_argument("--episode_len", type=int, default=900)
-    p.add_argument("--spawn", type=float, default=0.15)
+    p.add_argument("--spawn", type=float, default=0.1)
     p.add_argument("--max_eta", type=int, default=80)
     p.add_argument("--block_size", type=int, default=6)
     p.add_argument("--street_width", type=int, default=2)
