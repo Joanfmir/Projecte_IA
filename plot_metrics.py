@@ -1,171 +1,81 @@
 # plot_metrics.py
 from __future__ import annotations
-import os
-import csv
-from typing import List, Dict
 
-import numpy as np
+import os
+import argparse
+import pandas as pd
 import matplotlib.pyplot as plt
 
 
-METRICS_PATH = "artifacts/metrics.csv"
-
-
-
-def moving_average(x: List[float], window: int) -> np.ndarray:
-    if window <= 1:
-        return np.array(x, dtype=float)
-    arr = np.array(x, dtype=float)
-    if len(arr) < window:
-        # si hay pocos puntos, devolvemos media simple
-        return np.array([arr.mean()] * len(arr))
-    kernel = np.ones(window) / window
-    return np.convolve(arr, kernel, mode="valid")
-
-
-def read_metrics(path: str) -> Dict[str, List]:
+def read_metrics(path: str) -> pd.DataFrame:
     if not os.path.exists(path):
-        raise FileNotFoundError(f"No existe {path}. ¿Seguro que está en la raíz del proyecto?")
-
-    cols = {
-        "episode": [],
-        "reward": [],
-        "pending_avg": [],
-        "delivered_total": [],
-        "ontime": [],
-        "late": [],
-        "epsilon": [],
-        "sec_elapsed": [],
-    }
-
-    with open(path, "r", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            cols["episode"].append(int(row["episode"]))
-            cols["reward"].append(float(row["reward"]))
-            cols["pending_avg"].append(float(row.get("pending_avg", 0.0)))
-            cols["delivered_total"].append(int(float(row.get("delivered_total", 0))))
-            cols["ontime"].append(int(float(row.get("ontime", 0))))
-            cols["late"].append(int(float(row.get("late", 0))))
-            cols["epsilon"].append(float(row.get("epsilon", 0.0)))
-            cols["sec_elapsed"].append(float(row.get("sec_elapsed", 0.0)))
-    return cols
+        raise FileNotFoundError(
+            f"No existe {path}. Ejecuta primero train.py o pasa la ruta correcta con --metrics"
+        )
+    df = pd.read_csv(path)
+    if "episode" not in df.columns:
+        raise ValueError("metrics.csv debe tener columna 'episode'")
+    return df
 
 
-def save_plot(fig, filename: str):
-    os.makedirs("plots", exist_ok=True)
-    out = os.path.join("plots", filename)
-    fig.savefig(out, dpi=200, bbox_inches="tight")
-    print("Guardado:", out)
+def ensure_dir(d: str) -> None:
+    os.makedirs(d, exist_ok=True)
 
 
-def plot_reward(data: Dict[str, List], window: int = 25):
-    ep = data["episode"]
-    r = data["reward"]
-
-    fig = plt.figure(figsize=(9, 4.5))
-    plt.plot(ep, r, linewidth=1, alpha=0.55, label="Reward (episodio)")
-
-    sm = moving_average(r, window=window)
-    # para alinear con episodios (valid reduce longitud)
-    ep_sm = ep[len(ep) - len(sm):]
-    plt.plot(ep_sm, sm, linewidth=2, label=f"Media móvil (window={window})")
-
-    # Comparación inicio vs final (si hay suficientes episodios)
-    n = len(r)
-    k = min(100, n // 3) if n >= 30 else max(1, n // 2)
-    first_mean = np.mean(r[:k])
-    last_mean = np.mean(r[-k:])
-    plt.axhline(first_mean, linestyle="--", linewidth=1, label=f"Media primeros {k}: {first_mean:.0f}")
-    plt.axhline(last_mean, linestyle="--", linewidth=1, label=f"Media últimos {k}: {last_mean:.0f}")
-
-    plt.title("Evolución del reward durante el entrenamiento")
-    plt.xlabel("Episodio")
-    plt.ylabel("Reward total")
-    plt.grid(True, alpha=0.25)
-    plt.legend()
-    plt.tight_layout()
-
-    save_plot(fig, "reward.png")
-    return fig
+def save_plot(fig, out_dir: str, name: str, tag: str):
+    ensure_dir(out_dir)
+    base = f"{name}.png" if not tag else f"{name}_{tag}.png"
+    path = os.path.join(out_dir, base)
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    print("Saved:", path)
 
 
-def plot_pending(data: Dict[str, List], window: int = 25):
-    ep = data["episode"]
-    p = data["pending_avg"]
-
-    fig = plt.figure(figsize=(9, 4.5))
-    plt.plot(ep, p, linewidth=1, alpha=0.6, label="Pending avg (episodio)")
-
-    sm = moving_average(p, window=window)
-    ep_sm = ep[len(ep) - len(sm):]
-    plt.plot(ep_sm, sm, linewidth=2, label=f"Media móvil (window={window})")
-
-    plt.title("Pedidos pendientes (media) durante el entrenamiento")
-    plt.xlabel("Episodio")
-    plt.ylabel("Pending avg")
-    plt.grid(True, alpha=0.25)
-    plt.legend()
-    plt.tight_layout()
-
-    save_plot(fig, "pending_avg.png")
-    return fig
-
-
-def plot_ontime_late(data: Dict[str, List], window: int = 25):
-    ep = data["episode"]
-    on = data["ontime"]
-    late = data["late"]
-
-    fig = plt.figure(figsize=(9, 4.5))
-    plt.plot(ep, on, linewidth=1, alpha=0.55, label="On-time (episodio)")
-    plt.plot(ep, late, linewidth=1, alpha=0.55, label="Late (episodio)")
-
-    on_sm = moving_average(on, window=window)
-    late_sm = moving_average(late, window=window)
-    ep_sm = ep[len(ep) - len(on_sm):]
-    plt.plot(ep_sm, on_sm, linewidth=2, label=f"On-time media móvil (w={window})")
-    plt.plot(ep_sm, late_sm, linewidth=2, label=f"Late media móvil (w={window})")
-
-    plt.title("Entregas a tiempo vs tarde (por episodio)")
-    plt.xlabel("Episodio")
-    plt.ylabel("Nº entregas")
-    plt.grid(True, alpha=0.25)
-    plt.legend()
-    plt.tight_layout()
-
-    save_plot(fig, "ontime_late.png")
-    return fig
-
-
-def plot_epsilon(data: Dict[str, List]):
-    ep = data["episode"]
-    eps = data["epsilon"]
-
-    fig = plt.figure(figsize=(9, 4.5))
-    plt.plot(ep, eps, linewidth=2)
-    plt.title("Epsilon (exploración) durante el entrenamiento")
-    plt.xlabel("Episodio")
-    plt.ylabel("Epsilon")
-    plt.grid(True, alpha=0.25)
-    plt.tight_layout()
-
-    save_plot(fig, "epsilon.png")
-    return fig
+def plot_series(df: pd.DataFrame, x: str, y: str, title: str, out_dir: str, name: str, tag: str):
+    fig = plt.figure()
+    plt.plot(df[x], df[y])
+    plt.title(title)
+    plt.xlabel(x)
+    plt.ylabel(y)
+    save_plot(fig, out_dir, name, tag)
 
 
 def main():
-    data = read_metrics(METRICS_PATH)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--metrics", default="artifacts/metrics.csv", help="Ruta a metrics.csv")
+    ap.add_argument("--out", default="plots", help="Carpeta de salida para los png")
+    ap.add_argument("--tag", default="", help="Sufijo para no sobreescribir (ej: run_2025_12_24)")
+    args = ap.parse_args()
 
-    # Ventana de media móvil: ajusta si quieres más suavizado
-    window = 25
+    df = read_metrics(args.metrics)
 
-    fig1 = plot_reward(data, window=window)
-    fig2 = plot_pending(data, window=window)
-    fig3 = plot_ontime_late(data, window=window)
-    fig4 = plot_epsilon(data)
+    # Si no existe reward_avg_50 (runs viejos), lo calculamos
+    if "reward_avg_50" not in df.columns and "reward" in df.columns:
+        df["reward_avg_50"] = df["reward"].rolling(50, min_periods=1).mean()
 
-    plt.show()
+    # Plots básicos (según columnas disponibles)
+    if "reward" in df.columns:
+        plot_series(df, "episode", "reward", "Reward por episodio", args.out, "reward", args.tag)
+
+    if "reward_avg_50" in df.columns:
+        plot_series(df, "episode", "reward_avg_50", "Reward (media móvil 50)", args.out, "reward_avg_50", args.tag)
+
+    if "pending_avg" in df.columns:
+        plot_series(df, "episode", "pending_avg", "Pedidos pendientes (avg)", args.out, "pending_avg", args.tag)
+
+    if "delivered_total" in df.columns:
+        plot_series(df, "episode", "delivered_total", "Entregas totales por episodio", args.out, "delivered_total", args.tag)
+
+    if "ontime" in df.columns:
+        plot_series(df, "episode", "ontime", "Entregas a tiempo", args.out, "ontime", args.tag)
+
+    if "late" in df.columns:
+        plot_series(df, "episode", "late", "Entregas tarde", args.out, "late", args.tag)
+
+    if "epsilon" in df.columns:
+        plot_series(df, "episode", "epsilon", "Epsilon (exploración)", args.out, "epsilon", args.tag)
+
+    print("\nOK. Si sigues viendo plots antiguos, usa --tag para generar nombres nuevos.")
 
 
 if __name__ == "__main__":

@@ -35,7 +35,7 @@ class SimConfig:
 
     # cierres de calles (lo activaremos luego)
     road_closure_prob: float = 0.0
-    road_closures_per_event: int = 1
+    road_closures_per_event: int = 5
 
 
 class Simulator:
