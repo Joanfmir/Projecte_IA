@@ -1,0 +1,408 @@
+# eval_factored.py
+"""
+Evaluación reproducible del agente Q-Learning factorizado.
+Compara contra heurística baseline con métricas completas.
+"""
+from __future__ import annotations
+import argparse
+import statistics
+import json
+import random
+from dataclasses import dataclass, asdict
+from typing import Dict, List, Optional
+
+from simulation.simulator import Simulator, SimConfig
+from core.dispatch_policy import (
+    A_ASSIGN_ANY_NEAREST,
+    A_ASSIGN_URGENT_NEAREST,
+    A_WAIT,
+    A_REPLAN_TRAFFIC,
+)
+from core.factored_states import FactoredStateEncoder
+from core.factored_q_agent import FactoredQAgent
+
+
+@dataclass
+class EvalConfig:
+    """Configuración de evaluación."""
+
+    n_episodes: int = 20
+    episode_len: int = 900
+
+    # Simulador
+    width: int = 45
+    height: int = 35
+    n_riders: int = 6
+    order_spawn_prob: float = 0.35
+    max_eta: int = 80
+    block_size: int = 6
+    street_width: int = 2
+
+    # Eventos dinámicos
+    enable_traffic_changes: bool = True
+    traffic_change_interval: int = 60  # cada cuántos ticks
+    enable_road_closures: bool = True
+    road_closure_prob: float = 0.02  # probabilidad por tick de nuevo cierre
+    max_closures: int = 5  # máximo de cierres activos
+
+    # Reproducibilidad
+    base_seed: Optional[int] = None  # None = aleatorio
+
+    # Paths
+    q_path: str = "artifacts/qtable_factored.pkl"
+
+
+@dataclass
+class EpisodeMetrics:
+    """Métricas de un episodio."""
+
+    seed: int
+    reward_total: float
+
+    # Pedidos
+    orders_created: int
+    orders_delivered: int
+    orders_ontime: int
+    orders_late: int
+    orders_pending_end: int
+    ontime_ratio: float
+
+    # Tiempos
+    avg_delivery_time: float
+
+    # Riders
+    avg_fatigue: float
+    max_fatigue: float
+    fatigue_std: float
+    avg_distance: float
+    deliveries_imbalance: float  # std de entregas por rider
+
+    # Tráfico
+    traffic_changes: int
+    road_closures_total: int
+
+    # Q-table usage (solo para agente)
+    q1_used: int = 0
+    q2_used: int = 0
+    q3_used: int = 0
+
+
+def run_episode_with_events(
+    sim: Simulator,
+    policy_fn,
+    cfg: EvalConfig,
+    track_q_usage: bool = False,
+) -> EpisodeMetrics:
+    """
+    Ejecuta un episodio con eventos dinámicos (tráfico, cierres).
+    """
+    rng = sim.rng
+
+    total_r = 0.0
+    traffic_changes = 0
+    road_closures_total = 0
+    q_usage = {"Q1": 0, "Q2": 0, "Q3": 0, "none": 0}
+
+    # Tracking de tiempos de entrega
+    delivery_times: List[int] = []
+
+    done = False
+    prev_traffic_zones = dict(getattr(sim, "traffic_zones", {}))
+
+    while not done:
+        t = sim.t
+
+        # === Eventos dinámicos ===
+
+        # Cambio de tráfico periódico
+        if (
+            cfg.enable_traffic_changes
+            and t > 0
+            and t % cfg.traffic_change_interval == 0
+        ):
+            # Forzar cambio de tráfico
+            levels = ["low", "medium", "high"]
+            new_zones = {z: rng.choice(levels) for z in range(4)}
+            # Asegurar que al menos una zona cambie
+            if new_zones == prev_traffic_zones:
+                z = rng.choice([0, 1, 2, 3])
+                current = new_zones[z]
+                new_zones[z] = rng.choice([l for l in levels if l != current])
+
+            sim.traffic_zones = new_zones
+            sim.graph.set_zone_traffic(new_zones)
+
+            if new_zones != prev_traffic_zones:
+                traffic_changes += 1
+            prev_traffic_zones = dict(new_zones)
+
+        # Cierres de calles aleatorios
+        if cfg.enable_road_closures and rng.random() < cfg.road_closure_prob:
+            current_closures = sim.graph.count_closed_directed()
+            if current_closures < cfg.max_closures * 2:  # *2 porque son bidireccionales
+                sim.graph.random_road_incidents(1)
+                road_closures_total += 1
+
+        # === Política ===
+        snap = sim.snapshot()
+        action, q_used = policy_fn(sim, snap)
+
+        if track_q_usage and q_used:
+            q_usage[q_used] += 1
+
+        # === Step ===
+        # Guardamos pedidos antes del step para detectar entregas
+        pending_before = set(o.order_id for o in sim.om.get_pending_orders())
+
+        reward, done = sim.step(action)
+        total_r += reward
+
+        # Detectar entregas y calcular tiempo
+        pending_after = set(o.order_id for o in sim.om.get_pending_orders())
+        delivered_this_step = pending_before - pending_after
+
+        for oid in delivered_this_step:
+            for o in sim.om.orders:
+                if o.order_id == oid and o.delivered_at is not None:
+                    delivery_times.append(o.delivered_at - o.created_at)
+
+    # === Calcular métricas finales ===
+    snap_end = sim.snapshot()
+    riders = snap_end["riders"]
+
+    fatigues = [r["fatigue"] for r in riders]
+    distances = [r.get("distance", 0) for r in riders]
+
+    # Contar entregas por rider
+    deliveries_per_rider = []
+    for r in sim.fm.get_all():
+        deliveries_per_rider.append(r.deliveries_done)
+
+    if len(deliveries_per_rider) >= 2:
+        mean_del = sum(deliveries_per_rider) / len(deliveries_per_rider)
+        var_del = sum((x - mean_del) ** 2 for x in deliveries_per_rider) / len(
+            deliveries_per_rider
+        )
+        del_imbalance = var_del**0.5
+    else:
+        del_imbalance = 0.0
+
+    delivered_total = snap_end.get("delivered_total", 0)
+    ontime = snap_end.get("delivered_ontime", 0)
+    late = snap_end.get("delivered_late", 0)
+
+    return EpisodeMetrics(
+        seed=sim.cfg.seed,
+        reward_total=total_r,
+        orders_created=len(sim.om.orders),
+        orders_delivered=delivered_total,
+        orders_ontime=ontime,
+        orders_late=late,
+        orders_pending_end=len(snap_end["pending_orders"]),
+        ontime_ratio=ontime / delivered_total if delivered_total > 0 else 0,
+        avg_delivery_time=(
+            sum(delivery_times) / len(delivery_times) if delivery_times else 0
+        ),
+        avg_fatigue=sum(fatigues) / len(fatigues) if fatigues else 0,
+        max_fatigue=max(fatigues) if fatigues else 0,
+        fatigue_std=statistics.pstdev(fatigues) if len(fatigues) >= 2 else 0,
+        avg_distance=sum(distances) / len(distances) if distances else 0,
+        deliveries_imbalance=del_imbalance,
+        traffic_changes=traffic_changes,
+        road_closures_total=road_closures_total,
+        q1_used=q_usage["Q1"],
+        q2_used=q_usage["Q2"],
+        q3_used=q_usage["Q3"],
+    )
+
+
+def make_heuristic_policy():
+    """Política heurística baseline: siempre asignar el más cercano."""
+
+    def policy(sim, snap):
+        return A_ASSIGN_ANY_NEAREST, None
+
+    return policy
+
+
+def make_factored_policy(q_path: str, episode_len: int):
+    """Política basada en agente factorizado entrenado."""
+    agent = FactoredQAgent.load(q_path, episode_len=episode_len)
+    agent.epsilon = 0.0  # Greedy en evaluación
+
+    def policy(sim, snap):
+        action = agent.choose_action(snap, training=False)
+        return action, agent.last_q_used
+
+    return policy, agent
+
+
+def evaluate(cfg: EvalConfig):
+    """Ejecuta evaluación completa."""
+
+    # Determinar seed base
+    if cfg.base_seed is None:
+        cfg.base_seed = random.randint(1, 100000)
+
+    print(f"=== Evaluación Reproducible ===")
+    print(f"Base seed: {cfg.base_seed}")
+    print(f"Episodios: {cfg.n_episodes}")
+    print(f"Traffic changes: {'ON' if cfg.enable_traffic_changes else 'OFF'}")
+    print(f"Road closures: {'ON' if cfg.enable_road_closures else 'OFF'}")
+    print()
+
+    # Crear políticas
+    heuristic_policy = make_heuristic_policy()
+
+    try:
+        factored_policy, agent = make_factored_policy(cfg.q_path, cfg.episode_len)
+        has_trained = True
+        print(f"Agente cargado: {agent.stats()}")
+    except FileNotFoundError:
+        print(f"⚠️  No se encontró {cfg.q_path}. Solo se evaluará heurística.")
+        has_trained = False
+
+    print()
+
+    # Resultados
+    results_h: List[EpisodeMetrics] = []
+    results_q: List[EpisodeMetrics] = []
+
+    for i in range(cfg.n_episodes):
+        ep_seed = cfg.base_seed + i
+
+        # Config del simulador
+        sim_cfg = SimConfig(
+            width=cfg.width,
+            height=cfg.height,
+            n_riders=cfg.n_riders,
+            episode_len=cfg.episode_len,
+            order_spawn_prob=cfg.order_spawn_prob,
+            max_eta=cfg.max_eta,
+            block_size=cfg.block_size,
+            street_width=cfg.street_width,
+            seed=ep_seed,
+        )
+
+        # Evaluar heurística
+        sim_h = Simulator(sim_cfg)
+        metrics_h = run_episode_with_events(
+            sim_h, heuristic_policy, cfg, track_q_usage=False
+        )
+        results_h.append(metrics_h)
+
+        # Evaluar agente factorizado
+        if has_trained:
+            sim_q = Simulator(sim_cfg)
+            agent.encoder.reset()
+            metrics_q = run_episode_with_events(
+                sim_q, factored_policy, cfg, track_q_usage=True
+            )
+            results_q.append(metrics_q)
+
+        print(
+            f"Ep {i+1}/{cfg.n_episodes} [seed={ep_seed}] - H: {metrics_h.ontime_ratio:.2%} on-time",
+            end="",
+        )
+        if has_trained:
+            print(f" | Q: {metrics_q.ontime_ratio:.2%} on-time")
+        else:
+            print()
+
+    # === Resumen ===
+    print("\n" + "=" * 60)
+    print("RESUMEN")
+    print("=" * 60)
+
+    def summarize(name: str, results: List[EpisodeMetrics]):
+        print(f"\n--- {name} ---")
+
+        def avg(key):
+            vals = [getattr(m, key) for m in results]
+            return sum(vals) / len(vals)
+
+        def std(key):
+            vals = [getattr(m, key) for m in results]
+            return statistics.pstdev(vals) if len(vals) >= 2 else 0
+
+        print(
+            f"  Reward:           {avg('reward_total'):>10.1f} ± {std('reward_total'):.1f}"
+        )
+        print(f"  Orders created:   {avg('orders_created'):>10.1f}")
+        print(f"  Orders delivered: {avg('orders_delivered'):>10.1f}")
+        print(f"  On-time ratio:    {avg('ontime_ratio')*100:>10.1f}%")
+        print(f"  Avg delivery time:{avg('avg_delivery_time'):>10.1f} ticks")
+        print(f"  Avg fatigue:      {avg('avg_fatigue'):>10.2f}")
+        print(f"  Max fatigue:      {avg('max_fatigue'):>10.2f}")
+        print(f"  Delivery imbal.:  {avg('deliveries_imbalance'):>10.2f}")
+        print(f"  Traffic changes:  {avg('traffic_changes'):>10.1f}")
+        print(f"  Road closures:    {avg('road_closures_total'):>10.1f}")
+
+        if results[0].q1_used > 0:
+            print(f"  Q1 used (avg):    {avg('q1_used'):>10.1f}")
+            print(f"  Q2 used (avg):    {avg('q2_used'):>10.1f}")
+            print(f"  Q3 used (avg):    {avg('q3_used'):>10.1f}")
+
+    summarize("HEURISTIC (nearest)", results_h)
+    if has_trained:
+        summarize("Q-LEARNING FACTORIZADO", results_q)
+
+        # Comparación directa
+        print("\n--- COMPARACIÓN ---")
+        h_ontime = sum(m.ontime_ratio for m in results_h) / len(results_h)
+        q_ontime = sum(m.ontime_ratio for m in results_q) / len(results_q)
+        diff = (q_ontime - h_ontime) * 100
+        print(
+            f"  Diferencia on-time: {diff:+.1f}% ({'mejor' if diff > 0 else 'peor'} Q-Learning)"
+        )
+
+        h_reward = sum(m.reward_total for m in results_h) / len(results_h)
+        q_reward = sum(m.reward_total for m in results_q) / len(results_q)
+        print(f"  Diferencia reward:  {q_reward - h_reward:+.1f}")
+
+    # Guardar resultados
+    output = {
+        "config": asdict(cfg),
+        "heuristic": [asdict(m) for m in results_h],
+    }
+    if has_trained:
+        output["factored"] = [asdict(m) for m in results_q]
+
+    output_path = "artifacts/eval_results.json"
+    with open(output_path, "w") as f:
+        json.dump(output, f, indent=2)
+    print(f"\nResultados guardados en: {output_path}")
+
+    return results_h, results_q if has_trained else None
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Evaluación del agente factorizado")
+    parser.add_argument("--episodes", type=int, default=20, help="Número de episodios")
+    parser.add_argument(
+        "--seed", type=int, default=None, help="Seed base (None=aleatorio)"
+    )
+    parser.add_argument("--qpath", type=str, default="artifacts/qtable_factored.pkl")
+    parser.add_argument(
+        "--no-traffic", action="store_true", help="Deshabilitar cambios de tráfico"
+    )
+    parser.add_argument(
+        "--no-closures", action="store_true", help="Deshabilitar cierres de calles"
+    )
+    parser.add_argument("--closure-prob", type=float, default=0.02)
+    args = parser.parse_args()
+
+    cfg = EvalConfig(
+        n_episodes=args.episodes,
+        base_seed=args.seed,
+        q_path=args.qpath,
+        enable_traffic_changes=not args.no_traffic,
+        enable_road_closures=not args.no_closures,
+        road_closure_prob=args.closure_prob,
+    )
+
+    evaluate(cfg)
+
+
+if __name__ == "__main__":
+    main()
