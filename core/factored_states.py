@@ -373,8 +373,10 @@ class FactoredStateEncoder:
         return features["pending_unassigned"] > 0 and features["free_riders"] > 0
 
     def should_use_q3(self, features: Dict) -> bool:
-        """¿Hubo cambio de tráfico?"""
-        return features["delta_traffic"] > 0
+        """¿Toca revisar tráfico? (cada 60 ticks, cuando cambia)."""
+        t = features.get("t", 0)
+        # El tráfico cambia cada 60 ticks en el simulador
+        return t > 0 and t % 60 == 0
 
     def should_use_q2(self, t: int, k: int = 10) -> bool:
         """¿Toca rebalanceo periódico?"""
@@ -403,10 +405,3 @@ def state_space_sizes() -> Dict[str, int]:
         "Q3_incident": q3_size,
         "total": q1_size + q2_size + q3_size,
     }
-
-
-if __name__ == "__main__":
-    sizes = state_space_sizes()
-    print("Tamaño de espacios de estados:")
-    for name, size in sizes.items():
-        print(f"  {name}: {size:,}")

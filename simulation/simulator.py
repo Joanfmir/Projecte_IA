@@ -12,7 +12,10 @@ from core.fleet_manager import FleetManager, Rider
 from core.assignment_engine import AssignmentEngine
 from core.dispatch_policy import (
     make_state,
-    A_ASSIGN_URGENT_NEAREST, A_ASSIGN_ANY_NEAREST, A_WAIT, A_REPLAN_TRAFFIC
+    A_ASSIGN_URGENT_NEAREST,
+    A_ASSIGN_ANY_NEAREST,
+    A_WAIT,
+    A_REPLAN_TRAFFIC,
 )
 
 Node = Tuple[int, int]
@@ -45,17 +48,23 @@ class Simulator:
         self.avenues: List[dict] = []
         self.buildings: Set[Node] = self._generate_urban_buildings()
 
-        self.graph = RoadGraph(cfg.width, cfg.height, base_cost=1.0, seed=cfg.seed, blocked=self.buildings)
+        self.graph = RoadGraph(
+            cfg.width, cfg.height, base_cost=1.0, seed=cfg.seed, blocked=self.buildings
+        )
         self.planner = RoutePlanner(self.graph)
 
         self.om = OrderManager()
         self.fm = FleetManager()
 
-        self.restaurant: Node = self._nearest_walkable((cfg.width // 2, cfg.height // 2))
+        self.restaurant: Node = self._nearest_walkable(
+            (cfg.width // 2, cfg.height // 2)
+        )
         self.assigner = AssignmentEngine(self.planner, restaurant_pos=self.restaurant)
 
         self.t = 0
         self.traffic_level = "low"
+        # Tráfico por zonas (4 zonas: 0=NW, 1=NE, 2=SW, 3=SE)
+        self.traffic_zones = {0: "low", 1: "low", 2: "low", 3: "low"}
 
         for _ in range(cfg.n_riders):
             sp = self.rng.choice([0.9, 1.0, 1.1])
@@ -127,13 +136,14 @@ class Simulator:
             return start
 
         from collections import deque
+
         q = deque([start])
         seen = {start}
 
         while q:
             x, y = q.popleft()
-            for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
-                nb = (x+dx, y+dy)
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nb = (x + dx, y + dy)
                 if nb in seen:
                     continue
                 if 0 <= nb[0] < self.cfg.width and 0 <= nb[1] < self.cfg.height:
@@ -185,7 +195,8 @@ class Simulator:
 
     def _rebuild_plan_for_rider(self, rider: Rider) -> None:
         rider.assigned_order_ids = [
-            oid for oid in rider.assigned_order_ids
+            oid
+            for oid in rider.assigned_order_ids
             if (self._get_order(oid) and self._get_order(oid).is_pending())
         ]
 
@@ -259,35 +270,41 @@ class Simulator:
             else:
                 st = "pending"
 
-            orders_full.append({
-                "id": o.order_id,
-                "priority": o.priority,
-                "status": st,
-                "pickup": o.pickup,
-                "dropoff": o.dropoff,
-                "created_at": o.created_at,
-                "deadline": o.deadline,
-                "assigned_to": o.assigned_to,
-                "picked_up_at": o.picked_up_at,
-                "delivered_at": o.delivered_at,
-            })
+            orders_full.append(
+                {
+                    "id": o.order_id,
+                    "priority": o.priority,
+                    "status": st,
+                    "pickup": o.pickup,
+                    "dropoff": o.dropoff,
+                    "created_at": o.created_at,
+                    "deadline": o.deadline,
+                    "assigned_to": o.assigned_to,
+                    "picked_up_at": o.picked_up_at,
+                    "delivered_at": o.delivered_at,
+                }
+            )
 
         return {
             "t": self.t,
             "restaurant": self.restaurant,
             "buildings": list(self.buildings),
             "avenues": list(self.avenues),
-
-            "pending_orders": [(o.dropoff, o.priority, o.deadline, o.assigned_to) for o in pending],
+            "pending_orders": [
+                (o.dropoff, o.priority, o.deadline, o.assigned_to) for o in pending
+            ],
             "orders_full": orders_full,
-
             "riders": [
                 {
                     "id": r.rider_id,
                     "pos": r.position,
                     "route": list(r.route),
                     "fatigue": r.fatigue,
-                    "carrying": (r.delivery_queue[0] if (r.has_picked_up and r.delivery_queue) else None),
+                    "carrying": (
+                        r.delivery_queue[0]
+                        if (r.has_picked_up and r.delivery_queue)
+                        else None
+                    ),
                     "assigned": list(r.assigned_order_ids),
                     "picked": r.has_picked_up,
                     "waypoints": list(r.waypoints),
@@ -298,6 +315,7 @@ class Simulator:
                 for r in riders
             ],
             "traffic": self.traffic_level,
+            "traffic_zones": dict(self.traffic_zones),
             "closures": self.graph.count_closed_directed(),
             "blocked": self.graph.count_blocked(),
             "width": self.cfg.width,
@@ -323,25 +341,42 @@ class Simulator:
                 dropoff=drop,
                 now=self.t,
                 max_eta=max_eta,
-                priority=prio
+                priority=prio,
             )
 
     def maybe_change_traffic(self) -> None:
+        """Cambia el tráfico por zonas cada 60 ticks."""
         if self.t % 60 == 0 and self.t > 0:
-            self.traffic_level = self.rng.choice(["low", "medium", "high"])
-            self.graph.set_traffic_level(self.traffic_level)
+            levels = ["low", "medium", "high"]
+            # Cambiar cada zona con cierta probabilidad
+            for zone in range(4):
+                if self.rng.random() < 0.5:  # 50% de cambiar cada zona
+                    self.traffic_zones[zone] = self.rng.choice(levels)
+
+            # Actualizar el grafo con los nuevos niveles
+            self.graph.set_zone_traffic(self.traffic_zones)
+
+            # Mantener traffic_level global como el promedio/máximo
+            pressure = {"low": 0, "medium": 1, "high": 2}
+            avg = sum(pressure[lvl] for lvl in self.traffic_zones.values()) / 4
+            if avg < 0.5:
+                self.traffic_level = "low"
+            elif avg < 1.5:
+                self.traffic_level = "medium"
+            else:
+                self.traffic_level = "high"
 
     # -------------------
     # Movimiento + FATIGA
     # -------------------
     def move_riders_one_tick(self) -> List[Order]:
         # --- parámetros fatiga (ajústalos aquí) ---
-        FAT_STOP = 8.0          # si llega >= 8, se para
-        FAT_RESUME = 6.0        # vuelve a moverse al bajar <= 6 (histeresis)
-        FAT_DECAY = 0.02        # regenera siempre (si NO está descansando)
-        FAT_DECAY_REST = 0.08   # regenera más rápido si está descansando
-        FAT_MOVE_INC = 0.05     # sube por cada paso
-        FAT_PICKUP_BONUS = 0.40 # sube extra al recoger pedidos
+        FAT_STOP = 8.0  # si llega >= 8, se para
+        FAT_RESUME = 6.0  # vuelve a moverse al bajar <= 6 (histeresis)
+        FAT_DECAY = 0.02  # regenera siempre (si NO está descansando)
+        FAT_DECAY_REST = 0.08  # regenera más rápido si está descansando
+        FAT_MOVE_INC = 0.05  # sube por cada paso
+        FAT_PICKUP_BONUS = 0.40  # sube extra al recoger pedidos
 
         delivered_now: List[Order] = []
 
@@ -387,7 +422,11 @@ class Simulator:
 
             if r.position == tgt and r.waypoints:
                 # (A) llega a restaurante y aún no ha recogido -> recoger
-                if tgt == self.restaurant and (not r.has_picked_up) and r.assigned_order_ids:
+                if (
+                    tgt == self.restaurant
+                    and (not r.has_picked_up)
+                    and r.assigned_order_ids
+                ):
                     r.has_picked_up = True
 
                     # ✅ marcar picked_up_at en todos sus pedidos pendientes
@@ -421,7 +460,11 @@ class Simulator:
                     r.waypoint_idx += 1
 
                 # (D) vuelve a restaurante y ya no quedan pedidos -> disponible
-                elif tgt == self.restaurant and r.has_picked_up and (not r.assigned_order_ids):
+                elif (
+                    tgt == self.restaurant
+                    and r.has_picked_up
+                    and (not r.assigned_order_ids)
+                ):
                     r.available = True
                     r.has_picked_up = False
                     r.delivery_queue = []
@@ -444,7 +487,11 @@ class Simulator:
     # -------------------
     def compute_state(self) -> tuple:
         pending = len(self.om.get_pending_orders())
-        urgent = [o for o in self.om.get_pending_orders() if o.is_urgent(self.t) or o.priority > 1]
+        urgent = [
+            o
+            for o in self.om.get_pending_orders()
+            if o.is_urgent(self.t) or o.priority > 1
+        ]
         urgent_ratio = (len(urgent) / pending) if pending > 0 else 0.0
 
         free = len([r for r in self.fm.get_all() if r.can_take_more()])
@@ -474,11 +521,13 @@ class Simulator:
                 r += 10.0
             else:
                 late = o.delivered_at - o.deadline
-                r -= (10.0 + 2.0 * late)
+                r -= 10.0 + 2.0 * late
 
         r -= 0.2 * len(self.om.get_pending_orders())
 
-        avg_fat = sum(x.fatigue for x in self.fm.get_all()) / max(1, len(self.fm.get_all()))
+        avg_fat = sum(x.fatigue for x in self.fm.get_all()) / max(
+            1, len(self.fm.get_all())
+        )
         r -= 0.05 * avg_fat
         return r
 
