@@ -11,13 +11,15 @@ Node = tuple[int, int]
 
 
 class AssignmentEngine:
-    def __init__(self, planner: RoutePlanner, restaurant_pos: Node):
+    def __init__(
+        self, planner: RoutePlanner, restaurant_pos: Node, activation_cost: float = 2.0
+    ):
         self.planner = planner
         self.restaurant_pos = restaurant_pos
         # Hiperparámetros de batching
         self.max_insertion_delta: float = 25.0
         self.slack_tolerance: float = 3.0
-        self.activation_cost: float = 5.0
+        self.activation_cost: float = activation_cost
 
     # -----------------------
     # Distancia Octile (O(1) - precisa para grids 8-direccionales)
@@ -98,9 +100,12 @@ class AssignmentEngine:
         best_cost = float("inf")
         best_perm: Optional[Tuple[Tuple[int, Node], ...]] = None
         best_key: Optional[Tuple[int, ...]] = None
+        EPS = 1e-6
 
         need_pickup = not rider.has_picked_up
 
+        # NOTE: brute-force permutations. Complexity O(n!) but capacity is capped (≤3),
+        # so this remains small. If capacity grows, replace with scalable heuristic.
         for perm in itertools.permutations(drop_list):
             cost = 0.0
             current = rider.position
@@ -115,7 +120,9 @@ class AssignmentEngine:
             cost += self._path_cost(current, self.restaurant_pos)
 
             perm_key = tuple(pid for pid, _ in perm)
-            if cost < best_cost or (cost == best_cost and (best_key is None or perm_key < best_key)):
+            if (cost + EPS) < best_cost or (
+                abs(cost - best_cost) <= EPS and (best_key is None or perm_key < best_key)
+            ):
                 best_cost = cost
                 best_perm = perm
                 best_key = perm_key
@@ -200,7 +207,8 @@ class AssignmentEngine:
         if not candidates:
             return None
 
-        candidates.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
+        # Slack ya fue filtrado; priorizar coste efectivo, luego slack, rider, pedido
+        candidates.sort(key=lambda x: (x[1], x[0], x[2], x[3]))
         _, _, _, _, order, rider = candidates[0]
         return order, rider
 

@@ -30,6 +30,7 @@ class SimConfig:
     order_spawn_prob: float = 0.15
     max_eta: int = 55
     seed: int = 7
+    activation_cost: float = 2.0
 
     # urban layout
     block_size: int = 5
@@ -65,7 +66,9 @@ class Simulator:
         self.restaurant: Node = self._nearest_walkable(
             (cfg.width // 2, cfg.height // 2)
         )
-        self.assigner = AssignmentEngine(self.planner, restaurant_pos=self.restaurant)
+        self.assigner = AssignmentEngine(
+            self.planner, restaurant_pos=self.restaurant, activation_cost=cfg.activation_cost
+        )
 
         self.t = 0
         self.traffic_level = "low"
@@ -447,7 +450,13 @@ class Simulator:
                     and r.assigned_order_ids
                 ):
                     # Esperar en restaurante si queda backlog por asignar y hay capacidad
-                    if remaining_unassigned_global and r.can_take_more():
+                    any_other_eligible = any(
+                        (r2.rider_id != r.rider_id)
+                        and (not getattr(r2, "resting", False))
+                        and (len(r2.assigned_order_ids) < getattr(r2, "capacity", 3))
+                        for r2 in self.fm.get_all()
+                    )
+                    if remaining_unassigned_global and r.can_take_more() and any_other_eligible:
                         r.available = False
                         continue
 

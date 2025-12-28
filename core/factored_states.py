@@ -6,14 +6,9 @@ Codificación de estados para Q-Learning factorizado.
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
+from core.route_planner import RoutePlanner
 
 Node = Tuple[int, int]
-
-
-def octile(a: Node, b: Node) -> float:
-    dx = abs(a[0] - b[0])
-    dy = abs(a[1] - b[1])
-    return max(dx, dy) + 0.414 * min(dx, dy)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -84,18 +79,18 @@ def bin_min_slack(slack: int) -> int:
 
 
 def bin_min_slack_with_sentinel(slack: int) -> int:
-    """Min slack con bin reservado para 'sin pedidos' (valor <0)."""
-    if slack < 0:
-        return 0
+    """Min slack con bin reservado para 'sin pedidos' (valor muy alto)."""
+    if slack >= 300:
+        return 5  # sentinel alto (sin pedidos sin asignar)
     if slack == 0:
-        return 1
+        return 0
     if slack <= 4:
-        return 2
+        return 1
     if slack <= 8:
-        return 3
+        return 2
     if slack <= 15:
-        return 4
-    return 5
+        return 3
+    return 4
 
 
 def bin_zones_congested(count: int) -> int:
@@ -184,15 +179,18 @@ def bin_riders_at_restaurant(n: int) -> int:
     return 2
 
 
-def bin_capacity_count(n: int) -> int:
-    """Conteo de riders por estado de carga: 0, 1, 2, 3+ → 0-3."""
-    if n == 0:
-        return 0
-    if n == 1:
-        return 1
-    if n == 2:
+def bin_capacity_mix(partial: int, full: int) -> int:
+    """
+    Mezcla de carga por flota:
+    0: todos vacíos
+    1: hay parciales, sin full
+    2: hay full (3+ activos)
+    """
+    if full > 0:
         return 2
-    return 3
+    if partial > 0:
+        return 1
+    return 0
 
 
 def bin_min_rider_distance(dist: float) -> int:
@@ -265,9 +263,10 @@ def extract_features(
             if not isinstance(item, (list, tuple)) or len(item) < 4:
                 continue
             dropoff, priority, deadline, assigned = item[:4]
+            oid = item[4] if len(item) > 4 else idx
             pending_details.append(
                 {
-                    "id": idx,
+                    "id": oid,
                     "dropoff": tuple(dropoff),
                     "priority": priority,
                     "deadline": deadline,
@@ -296,7 +295,7 @@ def extract_features(
     if unassigned:
         min_slack = min((o["deadline"] - t) for o in unassigned)
     else:
-        min_slack = -1  # Sentinel: no hay pedidos sin asignar
+        min_slack = 999  # Sentinel alto: no hay pedidos sin asignar
 
     # Riders
     riders = snap.get("riders", [])
@@ -309,7 +308,8 @@ def extract_features(
     # Criterios: can_take_more, NOT resting, (available OR at_restaurant)
     def is_eligible(r):
         assigned_len = active_count(r)
-        has_capacity = assigned_len < 3
+        capacity = r.get("capacity", 3)
+        has_capacity = assigned_len < capacity
         resting = r.get("resting", False)
         available = r.get("available", False)
         at_restaurant = tuple(r.get("pos", (0, 0))) == tuple(restaurant)
@@ -370,9 +370,9 @@ def extract_features(
                 rx, ry = r.get("pos", (0, 0))
                 # Distancia octile: rider -> restaurant -> dropoff
                 if (rx, ry) == tuple(restaurant):
-                    dist = octile((rx, ry), (ox, oy))
+                    dist = RoutePlanner.heuristic((rx, ry), (ox, oy))
                 else:
-                    dist = octile((rx, ry), tuple(restaurant)) + octile(
+                    dist = RoutePlanner.heuristic((rx, ry), tuple(restaurant)) + RoutePlanner.heuristic(
                         tuple(restaurant), (ox, oy)
                     )
                 min_rider_to_order = dist if min_rider_to_order < 0 else min(
@@ -387,15 +387,12 @@ def extract_features(
         )
     closest_partial_eta = -1.0
     if candidate_order and partial_pool:
+        drop = candidate_order["dropoff"]
         for r in partial_pool:
             rx, ry = r.get("pos", (0, 0))
-            drop = candidate_order["dropoff"]
-            if (rx, ry) == tuple(restaurant):
-                eta = octile(tuple(restaurant), drop)
-            else:
-                eta = octile((rx, ry), tuple(restaurant)) + octile(
-                    tuple(restaurant), drop
-                )
+            if (rx, ry) != tuple(restaurant):
+                continue
+            eta = RoutePlanner.heuristic(tuple(restaurant), drop)
             closest_partial_eta = eta if closest_partial_eta < 0 else min(
                 closest_partial_eta, eta
             )
@@ -435,9 +432,7 @@ def extract_features(
         if candidate_order
         else -1,
         "free_riders": free_riders,
-        "empty_riders": empty_riders,
-        "partial_riders": partial_riders,
-        "full_riders": full_riders,
+        "capacity_mix": bin_capacity_mix(partial_riders, full_riders),
         "riders_at_restaurant": riders_at_restaurant,
         "busy_riders": busy_riders,
         "avg_fatigue": avg_fatigue,
@@ -514,12 +509,9 @@ class FactoredStateEncoder:
             bin_urgent(features["urgent_unassigned"]),
             bin_free_riders(features["free_riders"]),
             bin_min_slack_with_sentinel(features["min_slack"]),
-            bin_zones_congested(features["zones_congested"]),
             bin_riders_at_restaurant(features["riders_at_restaurant"]),
             bin_distance_with_sentinel(features["min_rider_to_order"]),
-            bin_capacity_count(features["empty_riders"]),
-            bin_capacity_count(features["partial_riders"]),
-            bin_capacity_count(features["full_riders"]),
+            features["capacity_mix"],
             bin_distance_with_sentinel(features["closest_partial_eta"]),
         )
 
@@ -556,8 +548,8 @@ class FactoredStateEncoder:
 
 def state_space_sizes() -> Dict[str, int]:
     """Retorna el tamaño de cada espacio de estados (Q1 y Q3 solamente)."""
-    # Q₁: 5 * 5 * 4 * 4 * 6 * 4 * 3 * 5 * 4 * 4 * 4 * 5 = 46,080,000
-    q1_size = 5 * 5 * 4 * 4 * 6 * 4 * 3 * 5 * 4 * 4 * 4 * 5
+    # Q₁: 5 * 5 * 4 * 4 * 6 * 3 * 5 * 3 * 5 = 540,000
+    q1_size = 5 * 5 * 4 * 4 * 6 * 3 * 5 * 3 * 5
 
     # Q₃: 4 * 4 * 4 * 5 = 320
     q3_size = 4 * 4 * 4 * 5

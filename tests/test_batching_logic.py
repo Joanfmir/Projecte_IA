@@ -40,9 +40,14 @@ def test_batching_prefers_partial_rider_cluster():
     neighbors = [nb for nb, _ in sim.graph.neighbors(sim.restaurant)]
     drops = neighbors[:3]
     if len(drops) < 3:
-        # Fallback determinista si hay pocos vecinos
-        for _ in range(3 - len(drops)):
-            drops.append(sim._random_walkable_cell())
+        # Fallback determinista: reutilizar vecinos existentes o restaurante
+        if not neighbors:
+            drops = [sim.restaurant] * 3
+        else:
+            idx = 0
+            while len(drops) < 3:
+                drops.append(neighbors[idx % len(neighbors)])
+                idx += 1
     for drop in drops:
         assert drop is not None
         sim.om.create_order(
@@ -58,9 +63,8 @@ def test_batching_prefers_partial_rider_cluster():
     snap = sim.snapshot()
     # Ejecutar 3 decisiones deterministas (greedy)
     for _ in range(3):
-        action = agent.choose_action(snap, training=False)
-        # Forzar asignación greedily si por alguna razón se eligiera otra cosa
-        action = action if action in (A_ASSIGN_ANY_NEAREST,) else A_ASSIGN_ANY_NEAREST
+        # Asignación greedy explícita (probamos la heurística de batching, no la política aprendida)
+        action = A_ASSIGN_ANY_NEAREST
         reward, done = sim.step(action)
         snap_next = sim.snapshot()
         agent.update(snap, action, reward, snap_next, done)
@@ -109,5 +113,7 @@ def test_wait_updates_q_value_on_backlog():
     agent.update(snap, action, reward, snap_next, done)
 
     q_wait = agent.get_q(agent.Q1, encoded["s_assign"], A_WAIT)
-    # El valor debe reflejar el coste de esperar en backlog crítico (recompensa negativa)
+    # El valor debe reflejar el coste de esperar en backlog crítico.
+    # Asume recompensa negativa por penalización de pedidos urgentes sin asignar;
+    # si la estructura de recompensas cambia, actualizar esta aserción.
     assert q_wait < 0
