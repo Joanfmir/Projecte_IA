@@ -4,13 +4,17 @@ from typing import Dict, Tuple, List, Optional
 import heapq
 from core.road_graph import RoadGraph, Node
 
+
 class RoutePlanner:
     def __init__(self, graph: RoadGraph):
         self.graph = graph
 
     @staticmethod
     def heuristic(a: Node, b: Node) -> float:
-        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+        """Octile distance: óptima para grids 8-direccionales."""
+        dx = abs(a[0] - b[0])
+        dy = abs(a[1] - b[1])
+        return max(dx, dy) + 0.414 * min(dx, dy)
 
     def astar(self, start: Node, goal: Node) -> Tuple[List[Node], float]:
         """

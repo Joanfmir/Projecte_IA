@@ -38,6 +38,8 @@ def train(
         block_size=6,
         street_width=2,
         seed=base_seed,
+        enable_internal_spawn=True,
+        enable_internal_traffic=True,
     )
 
     # Agente factorizado
@@ -55,7 +57,7 @@ def train(
     last_deltas = deque(maxlen=50)  # Para suavizar delta Q
 
     # Contadores de uso de Q-tables
-    q_usage = {"Q1": 0, "Q2": 0, "Q3": 0, "none": 0}
+    q_usage = {"Q1": 0, "Q3": 0, "none": 0}
 
     # Convergencia
     converged = False
@@ -78,10 +80,8 @@ def train(
                 "sec_elapsed",
                 "seed",
                 "Q1_used",
-                "Q2_used",
                 "Q3_used",
                 "Q1_entries",
-                "Q2_entries",
                 "Q3_entries",
             ]
         )
@@ -98,7 +98,7 @@ def train(
             total_r = 0.0
             pending_sum = 0
             steps = 0
-            ep_q_usage = {"Q1": 0, "Q2": 0, "Q3": 0, "none": 0}
+            ep_q_usage = {"Q1": 0, "Q3": 0, "none": 0}
 
             snap = sim.snapshot()
             done = False
@@ -107,7 +107,7 @@ def train(
                 pending_sum += len(snap.get("pending_orders", []))
                 steps += 1
 
-                # Elegir acción
+                # Elegir acción (no modifica prev_traffic_pressure)
                 action = agent.choose_action(snap, training=True)
                 ep_q_usage[agent.last_q_used] += 1
 
@@ -120,6 +120,10 @@ def train(
 
                 # Actualizar Q-table (esto actualiza max_delta_q internamente)
                 agent.update(snap, action, reward, snap_next, done)
+
+                # Commit: actualizar prev_traffic_pressure con lo que OBSERVAMOS (snap)
+                # Así en el siguiente tick, delta_traffic = |nuevo - snap| detecta cambios
+                agent.commit_encoder(snap)
 
                 snap = snap_next
 
@@ -158,10 +162,8 @@ def train(
                     round(elapsed, 2),
                     cfg.seed,
                     ep_q_usage["Q1"],
-                    ep_q_usage["Q2"],
                     ep_q_usage["Q3"],
                     stats["Q1_entries"],
-                    stats["Q2_entries"],
                     stats["Q3_entries"],
                 ]
             )
@@ -180,7 +182,7 @@ def train(
                 if delta_avg_50 < delta_threshold:
                     episodes_below_threshold += 1
                     if episodes_below_threshold >= patience:
-                        print(f"\n✅ CONVERGENCIA alcanzada en episodio {ep}")
+                        print(f"\n[OK] CONVERGENCIA alcanzada en episodio {ep}")
                         print(
                             f"   delta_avg_50 = {delta_avg_50:.6f} < {delta_threshold}"
                         )
@@ -198,9 +200,33 @@ def train(
 
     if not converged:
         print(
-            f"\n⚠️  No convergió en {n_episodes} episodios. delta_avg_50 final = {delta_avg_50:.6f}"
+            f"\n[!] No convergió en {n_episodes} episodios. delta_avg_50 final = {delta_avg_50:.6f}"
         )
 
 
 if __name__ == "__main__":
-    train()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Entrenamiento secuencial Q-Learning factorizado"
+    )
+    parser.add_argument("--episodes", type=int, default=500, help="Número de episodios")
+    parser.add_argument("--seed", type=int, default=7, help="Seed base")
+    parser.add_argument(
+        "--episode_len", type=int, default=900, help="Longitud de episodio"
+    )
+    parser.add_argument(
+        "--delta", type=float, default=0.01, help="Umbral delta para convergencia"
+    )
+    parser.add_argument(
+        "--patience", type=int, default=30, help="Episodios bajo umbral para parar"
+    )
+    args = parser.parse_args()
+
+    train(
+        n_episodes=args.episodes,
+        base_seed=args.seed,
+        episode_len=args.episode_len,
+        delta_threshold=args.delta,
+        patience=args.patience,
+    )

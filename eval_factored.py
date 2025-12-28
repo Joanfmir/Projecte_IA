@@ -39,8 +39,7 @@ class EvalConfig:
     street_width: int = 2
 
     # Eventos dinámicos
-    enable_traffic_changes: bool = True
-    traffic_change_interval: int = 60  # cada cuántos ticks
+    # Tráfico ahora manejado internamente por simulator (enable_internal_traffic=True)
     enable_road_closures: bool = True
     road_closure_prob: float = 0.02  # probabilidad por tick de nuevo cierre
     max_closures: int = 5  # máximo de cierres activos
@@ -83,7 +82,6 @@ class EpisodeMetrics:
 
     # Q-table usage (solo para agente)
     q1_used: int = 0
-    q2_used: int = 0
     q3_used: int = 0
 
 
@@ -92,6 +90,7 @@ def run_episode_with_events(
     policy_fn,
     cfg: EvalConfig,
     track_q_usage: bool = False,
+    agent: "FactoredQAgent" = None,  # Para llamar commit_encoder
 ) -> EpisodeMetrics:
     """
     Ejecuta un episodio con eventos dinámicos (tráfico, cierres).
@@ -101,7 +100,7 @@ def run_episode_with_events(
     total_r = 0.0
     traffic_changes = 0
     road_closures_total = 0
-    q_usage = {"Q1": 0, "Q2": 0, "Q3": 0, "none": 0}
+    q_usage = {"Q1": 0, "Q3": 0, "none": 0}
 
     # Tracking de tiempos de entrega
     delivery_times: List[int] = []
@@ -113,30 +112,15 @@ def run_episode_with_events(
         t = sim.t
 
         # === Eventos dinámicos ===
+        # Tráfico manejado internamente por simulator.step() (enable_internal_traffic=True)
 
-        # Cambio de tráfico periódico
-        if (
-            cfg.enable_traffic_changes
-            and t > 0
-            and t % cfg.traffic_change_interval == 0
-        ):
-            # Forzar cambio de tráfico
-            levels = ["low", "medium", "high"]
-            new_zones = {z: rng.choice(levels) for z in range(4)}
-            # Asegurar que al menos una zona cambie
-            if new_zones == prev_traffic_zones:
-                z = rng.choice([0, 1, 2, 3])
-                current = new_zones[z]
-                new_zones[z] = rng.choice([l for l in levels if l != current])
+        # Detectar cambios de tráfico (para métricas)
+        current_zones = dict(getattr(sim, "traffic_zones", {}))
+        if current_zones != prev_traffic_zones:
+            traffic_changes += 1
+            prev_traffic_zones = current_zones
 
-            sim.traffic_zones = new_zones
-            sim.graph.set_zone_traffic(new_zones)
-
-            if new_zones != prev_traffic_zones:
-                traffic_changes += 1
-            prev_traffic_zones = dict(new_zones)
-
-        # Cierres de calles aleatorios
+        # Cierres de calles aleatorios (estos SÍ se inyectan externamente)
         if cfg.enable_road_closures and rng.random() < cfg.road_closure_prob:
             current_closures = sim.graph.count_closed_directed()
             if current_closures < cfg.max_closures * 2:  # *2 porque son bidireccionales
@@ -156,6 +140,10 @@ def run_episode_with_events(
 
         reward, done = sim.step(action)
         total_r += reward
+
+        # CRÍTICO: Actualizar prev_traffic_pressure para que delta_traffic funcione
+        if agent is not None:
+            agent.commit_encoder(snap)
 
         # Detectar entregas y calcular tiempo
         pending_after = set(o.order_id for o in sim.om.get_pending_orders())
@@ -211,7 +199,6 @@ def run_episode_with_events(
         traffic_changes=traffic_changes,
         road_closures_total=road_closures_total,
         q1_used=q_usage["Q1"],
-        q2_used=q_usage["Q2"],
         q3_used=q_usage["Q3"],
     )
 
@@ -247,7 +234,7 @@ def evaluate(cfg: EvalConfig):
     print(f"=== Evaluación Reproducible ===")
     print(f"Base seed: {cfg.base_seed}")
     print(f"Episodios: {cfg.n_episodes}")
-    print(f"Traffic changes: {'ON' if cfg.enable_traffic_changes else 'OFF'}")
+    print(f"Traffic: interno (enable_internal_traffic=True)")
     print(f"Road closures: {'ON' if cfg.enable_road_closures else 'OFF'}")
     print()
 
@@ -272,6 +259,7 @@ def evaluate(cfg: EvalConfig):
         ep_seed = cfg.base_seed + i
 
         # Config del simulador
+        # Spawn interno ON (necesitamos pedidos), tráfico interno OFF (gestionado en run_episode_with_events)
         sim_cfg = SimConfig(
             width=cfg.width,
             height=cfg.height,
@@ -282,6 +270,8 @@ def evaluate(cfg: EvalConfig):
             block_size=cfg.block_size,
             street_width=cfg.street_width,
             seed=ep_seed,
+            enable_internal_spawn=True,
+            enable_internal_traffic=True,  # MISMO régimen que entrenamiento
         )
 
         # Evaluar heurística
@@ -296,7 +286,7 @@ def evaluate(cfg: EvalConfig):
             sim_q = Simulator(sim_cfg)
             agent.encoder.reset()
             metrics_q = run_episode_with_events(
-                sim_q, factored_policy, cfg, track_q_usage=True
+                sim_q, factored_policy, cfg, track_q_usage=True, agent=agent
             )
             results_q.append(metrics_q)
 
@@ -340,7 +330,6 @@ def evaluate(cfg: EvalConfig):
 
         if results[0].q1_used > 0:
             print(f"  Q1 used (avg):    {avg('q1_used'):>10.1f}")
-            print(f"  Q2 used (avg):    {avg('q2_used'):>10.1f}")
             print(f"  Q3 used (avg):    {avg('q3_used'):>10.1f}")
 
     summarize("HEURISTIC (nearest)", results_h)
@@ -384,9 +373,6 @@ def main():
     )
     parser.add_argument("--qpath", type=str, default="artifacts/qtable_factored.pkl")
     parser.add_argument(
-        "--no-traffic", action="store_true", help="Deshabilitar cambios de tráfico"
-    )
-    parser.add_argument(
         "--no-closures", action="store_true", help="Deshabilitar cierres de calles"
     )
     parser.add_argument("--closure-prob", type=float, default=0.02)
@@ -396,7 +382,6 @@ def main():
         n_episodes=args.episodes,
         base_seed=args.seed,
         q_path=args.qpath,
-        enable_traffic_changes=not args.no_traffic,
         enable_road_closures=not args.no_closures,
         road_closure_prob=args.closure_prob,
     )

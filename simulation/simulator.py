@@ -39,6 +39,12 @@ class SimConfig:
     road_closure_prob: float = 0.0
     road_closures_per_event: int = 1
 
+    # Eventos internos separados (para control granular):
+    # - enable_internal_spawn: generar pedidos cada tick (casi siempre True)
+    # - enable_internal_traffic: cambiar tráfico cada 60 ticks (False si se maneja externamente)
+    enable_internal_spawn: bool = True
+    enable_internal_traffic: bool = True
+
 
 class Simulator:
     def __init__(self, cfg: SimConfig):
@@ -175,6 +181,10 @@ class Simulator:
         return self.om.get_order(order_id)
 
     def _sorted_drop_queue(self, rider: Rider) -> List[int]:
+        """
+        Ordena los pedidos por EDF (Earliest Deadline First) con tie-break por distancia.
+        Esto prioriza entregas urgentes sobre cercanas.
+        """
         valid: List[Order] = []
         for oid in rider.assigned_order_ids:
             o = self._get_order(oid)
@@ -186,12 +196,14 @@ class Simulator:
         if not valid:
             return []
 
+        # EDF: ordenar por deadline primero, distancia como tie-break
         scored = []
         for o in valid:
             _, c = self.planner.astar(self.restaurant, o.dropoff)
-            scored.append((float(c), o.order_id))
-        scored.sort(key=lambda x: x[0])
-        return [oid for _, oid in scored]
+            # (deadline, distancia) - deadline tiene prioridad
+            scored.append((o.deadline, float(c), o.order_id))
+        scored.sort(key=lambda x: (x[0], x[1]))  # deadline ASC, distancia ASC
+        return [oid for _, _, oid in scored]
 
     def _rebuild_plan_for_rider(self, rider: Rider) -> None:
         rider.assigned_order_ids = [
@@ -310,7 +322,10 @@ class Simulator:
                     "waypoints": list(r.waypoints),
                     "wp_idx": r.waypoint_idx,
                     "available": r.available,
-                    "resting": bool(getattr(r, "resting", False)),  # ✅ NUEVO
+                    "resting": bool(getattr(r, "resting", False)),
+                    # F7 FIX: Métricas para eval_factored.py
+                    "distance": r.distance_travelled,
+                    "deliveries_done": r.deliveries_done,
                 }
                 for r in riders
             ],
@@ -369,7 +384,13 @@ class Simulator:
     # -------------------
     # Movimiento + FATIGA
     # -------------------
-    def move_riders_one_tick(self) -> List[Order]:
+    def move_riders_one_tick(self) -> Tuple[List[Order], int]:
+        """
+        Mueve riders un tick y procesa pickups/deliveries.
+
+        Returns:
+            Tuple[List[Order], int]: (pedidos entregados, número de pickups)
+        """
         # --- parámetros fatiga (ajústalos aquí) ---
         FAT_STOP = 8.0  # si llega >= 8, se para
         FAT_RESUME = 6.0  # vuelve a moverse al bajar <= 6 (histeresis)
@@ -379,6 +400,7 @@ class Simulator:
         FAT_PICKUP_BONUS = 0.40  # sube extra al recoger pedidos
 
         delivered_now: List[Order] = []
+        picked_up_count: int = 0  # Reward shaping: contador de pickups
 
         for r in self.fm.get_all():
             # --- 1) regeneración base ---
@@ -434,8 +456,9 @@ class Simulator:
                         o = self._get_order(oid)
                         if o is not None and o.is_pending() and o.picked_up_at is None:
                             self.om.mark_picked_up(oid, now=self.t)
+                            picked_up_count += 1  # Reward shaping: contar pickups
 
-                    # ✅ fatiga extra por el “trabajo” de recoger/cargar
+                    # ✅ fatiga extra por el "trabajo" de recoger/cargar
                     r.fatigue += FAT_PICKUP_BONUS
 
                     r.waypoint_idx += 1
@@ -480,7 +503,7 @@ class Simulator:
                 else:
                     self._rebuild_plan_for_rider(r)
 
-        return delivered_now
+        return delivered_now, picked_up_count
 
     # -------------------
     # State + Reward
@@ -514,8 +537,25 @@ class Simulator:
             closures=self.graph.count_closed_directed(),
         )
 
-    def compute_reward(self, delivered_now: List[Order]) -> float:
+    def compute_reward(
+        self, delivered_now: List[Order], picked_up_count: int = 0
+    ) -> float:
+        """
+        Calcula reward con shaping para pickups.
+
+        Reward Shaping (CORREGIDO):
+        - +3.0 por cada pickup (feedback inmediato aumentado)
+        - +10.0 por entrega a tiempo
+        - -10.0 -2*late por entrega tardía
+        - -0.3 por pedido SIN ASIGNAR (no penaliza los que están en camino)
+        - -0.02 * avg_fatigue (reducido para no dominar)
+        """
         r = 0.0
+
+        # Reward shaping: bonus por pickups (feedback inmediato) - AUMENTADO
+        r += 3.0 * picked_up_count
+
+        # Reward por entregas
         for o in delivered_now:
             if o.delivered_at <= o.deadline:
                 r += 10.0
@@ -523,58 +563,105 @@ class Simulator:
                 late = o.delivered_at - o.deadline
                 r -= 10.0 + 2.0 * late
 
-        r -= 0.2 * len(self.om.get_pending_orders())
+        # CORRECCIÓN CRÍTICA: Solo penalizar pedidos SIN ASIGNAR
+        # Antes: penalizaba TODOS los pendientes, incluso los que ya estaban en camino
+        unassigned = [o for o in self.om.get_pending_orders() if o.assigned_to is None]
+        r -= 0.3 * len(unassigned)
 
+        # Fatigue penalty REDUCIDO para no dominar el reward
         avg_fat = sum(x.fatigue for x in self.fm.get_all()) / max(
             1, len(self.fm.get_all())
         )
-        r -= 0.05 * avg_fat
+        r -= 0.02 * avg_fat
         return r
 
     # -------------------
-    # Acción -> estrategia
+    # Acción -> estrategia (CON BATCHING)
     # -------------------
-    def apply_action(self, action: int) -> None:
-        orders = self.om.get_pending_orders()
-        riders = self.fm.get_available_riders()
+    def apply_action(self, action: int) -> int:
+        """
+        Aplica la acción seleccionada.
+        BATCHING: Asigna TODOS los pedidos posibles en un solo tick,
+        no solo uno. Esto da una señal de reward más clara al agente.
+
+        Returns:
+            int: Número de asignaciones realizadas en este tick.
+        """
+        assigned_count = 0
 
         if action == A_ASSIGN_URGENT_NEAREST:
-            pick = self.assigner.pick_urgent_nearest(orders, riders, now=self.t)
-            if pick:
-                o, r = pick
-                self.assigner.assign(o, r)
-                self._rebuild_plan_for_rider(r)
-            return
+            # Bucle: asignar todos los urgentes posibles
+            while True:
+                orders = self.om.get_pending_orders()
+                # F3 FIX: Usar get_all() para que AssignmentEngine filtre elegibles
+                # Esto permite asignar 2do pedido a rider en restaurante con available=False
+                riders = self.fm.get_all()
+                pick = self.assigner.pick_urgent_nearest(orders, riders, now=self.t)
+                if pick:
+                    o, r = pick
+                    self.assigner.assign(o, r)
+                    self._rebuild_plan_for_rider(r)
+                    assigned_count += 1
+                else:
+                    break
+            return assigned_count
 
         if action == A_ASSIGN_ANY_NEAREST:
-            pick = self.assigner.pick_any_nearest(orders, riders)
-            if pick:
-                o, r = pick
-                self.assigner.assign(o, r)
-                self._rebuild_plan_for_rider(r)
-            return
+            # Bucle: asignar todos los pedidos posibles
+            while True:
+                orders = self.om.get_pending_orders()
+                # F3 FIX: Usar get_all() para que AssignmentEngine filtre elegibles
+                riders = self.fm.get_all()
+                pick = self.assigner.pick_any_nearest(orders, riders)
+                if pick:
+                    o, r = pick
+                    self.assigner.assign(o, r)
+                    self._rebuild_plan_for_rider(r)
+                    assigned_count += 1
+                else:
+                    break
+            return assigned_count
 
         if action == A_WAIT:
-            return
+            return 0
 
         if action == A_REPLAN_TRAFFIC:
             for r in self.fm.get_all():
                 if r.waypoints:
                     self.assigner.replan_current_leg(r)
-            return
+            return 0
+
+        return assigned_count
 
     # -------------------
-    # STEP
+    # STEP (MARKOVIANO)
     # -------------------
     def step(self, action: int) -> tuple:
-        self.maybe_change_traffic()
-        self.maybe_spawn_order()
-
+        """
+        Orden de eventos Markoviano:
+        1. Observar estado (snapshot externo)
+        2. Aplicar acción
+        3. Mover riders (con tracking de pickups)
+        4. Calcular reward (con shaping para pickups)
+        5. Eventos aleatorios (afectan al SIGUIENTE estado, no al actual)
+        6. Incrementar tiempo
+        """
+        # 1-2. Aplicar la acción elegida por el agente
         self.apply_action(action)
 
-        delivered_now = self.move_riders_one_tick()
-        reward = self.compute_reward(delivered_now)
+        # 3. Mover riders y procesar entregas + pickups
+        delivered_now, picked_up_count = self.move_riders_one_tick()
 
+        # 4. Calcular reward con shaping (pickups dan +2.0 cada uno)
+        reward = self.compute_reward(delivered_now, picked_up_count)
+
+        # 5. Eventos aleatorios (DESPUÉS de la acción, afectan siguiente snapshot)
+        if self.cfg.enable_internal_traffic:
+            self.maybe_change_traffic()
+        if self.cfg.enable_internal_spawn:
+            self.maybe_spawn_order()
+
+        # 6. Avanzar tiempo
         self.t += 1
         done = self.t >= self.cfg.episode_len
         return reward, done

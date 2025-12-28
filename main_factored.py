@@ -69,6 +69,7 @@ def parse_args():
 
 
 def make_config(args) -> SimConfig:
+    # Spawn interno ON (necesitamos pedidos), tráfico interno OFF (apply_dynamic_events lo maneja)
     return SimConfig(
         width=args.width,
         height=args.height,
@@ -79,26 +80,9 @@ def make_config(args) -> SimConfig:
         seed=args.seed,
         block_size=args.block_size,
         street_width=args.street_width,
+        enable_internal_spawn=True,
+        enable_internal_traffic=True,  # Mismo régimen que entrenamiento
     )
-
-
-def apply_dynamic_events(sim: Simulator, t: int, args, rng):
-    """Aplica eventos dinámicos (tráfico, cierres)."""
-    if args.no_events:
-        return
-
-    # Cambio de tráfico
-    if t > 0 and t % args.traffic_interval == 0:
-        levels = ["low", "medium", "high"]
-        new_zones = {z: rng.choice(levels) for z in range(4)}
-        sim.traffic_zones = new_zones
-        sim.graph.set_zone_traffic(new_zones)
-
-    # Cierres de calles
-    if rng.random() < args.closure_prob:
-        current = sim.graph.count_closed_directed()
-        if current < 10:  # máximo 5 cierres bidireccionales
-            sim.graph.random_road_incidents(1)
 
 
 def run_headless(sim: Simulator, policy_name: str, qpath: str, args):
@@ -125,9 +109,6 @@ def run_headless(sim: Simulator, policy_name: str, qpath: str, args):
     while not done:
         t = sim.t
 
-        # Eventos dinámicos
-        apply_dynamic_events(sim, t, args, rng)
-
         # Elegir acción
         snap = sim.snapshot()
         if policy_name == "heuristic":
@@ -137,6 +118,10 @@ def run_headless(sim: Simulator, policy_name: str, qpath: str, args):
 
         reward, done = sim.step(action)
         total_reward += reward
+
+        # Commit encoder para que delta_traffic funcione en siguiente tick
+        if policy_name == "trained" and policy is not None:
+            policy.agent.commit_encoder(snap)
 
         # Progress cada 100 ticks
         if t % 100 == 0:

@@ -1,7 +1,7 @@
 # core/factored_states.py
 """
 Codificación de estados para Q-Learning factorizado.
-3 tipos de estado para 3 Q-tables distintas.
+2 tipos de estado para 2 Q-tables: Q1 (asignación) y Q3 (incidente/tráfico).
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -163,6 +163,17 @@ def bin_riders_at_restaurant(n: int) -> int:
     return 2
 
 
+def bin_min_rider_distance(dist: float) -> int:
+    """Distancia mínima rider elegible -> pedido más cercano: 0-3, 4-8, 9-15, 16+ → 0-3."""
+    if dist <= 3:
+        return 0
+    if dist <= 8:
+        return 1
+    if dist <= 15:
+        return 2
+    return 3
+
+
 # ─────────────────────────────────────────────────────────────
 # Extracción de features desde snapshot
 # ─────────────────────────────────────────────────────────────
@@ -216,13 +227,16 @@ def extract_features(
 
     # Riders
     riders = snap.get("riders", [])
+    restaurant = snap.get("restaurant", (0, 0))
 
-    # Elegibles: capacity disponible Y (available O en restaurante)
+    # F3 FIX: Elegibles ALINEADO con AssignmentEngine._eligible_riders()
+    # Criterios: can_take_more, NOT resting, (available OR at_restaurant)
     def is_eligible(r):
         has_capacity = len(r.get("assigned", [])) < 2
+        resting = r.get("resting", False)
         available = r.get("available", False)
         at_restaurant = tuple(r.get("pos", (0, 0))) == tuple(restaurant)
-        return has_capacity and (available or at_restaurant)
+        return has_capacity and (not resting) and (available or at_restaurant)
 
     free_riders = sum(1 for r in riders if is_eligible(r))
 
@@ -250,6 +264,28 @@ def extract_features(
         std_assigned = variance**0.5
     else:
         std_assigned = 0
+
+    # NUEVO: Distancia mínima rider elegible -> pedido sin asignar (octile)
+    min_rider_to_order = 999.0
+    restaurant = snap.get("restaurant", (0, 0))
+    for o_data in unassigned:
+        # o_data = (dropoff, priority, deadline, assigned_to)
+        ox, oy = o_data[0]  # dropoff position
+        for r in riders:
+            if is_eligible(r):
+                rx, ry = r.get("pos", (0, 0))
+                # Distancia octile: rider -> restaurant -> dropoff
+                # Si rider está en restaurante, solo distancia a dropoff
+                if (rx, ry) == tuple(restaurant):
+                    dx, dy = abs(rx - ox), abs(ry - oy)
+                else:
+                    # rider -> restaurant + restaurant -> dropoff
+                    d1x, d1y = abs(rx - restaurant[0]), abs(ry - restaurant[1])
+                    d2x, d2y = abs(restaurant[0] - ox), abs(restaurant[1] - oy)
+                    dx = d1x + d2x
+                    dy = d1y + d2y
+                octile = max(dx, dy) + 0.414 * min(dx, dy)
+                min_rider_to_order = min(min_rider_to_order, octile)
 
     # Tráfico por zonas - NORMALIZADO
     traffic_zones = snap.get("traffic_zones", {})
@@ -290,6 +326,7 @@ def extract_features(
         "zones_congested": zones_congested,
         "traffic_pressure": current_pressure,
         "delta_traffic": delta_traffic,
+        "min_rider_to_order": min_rider_to_order,  # NUEVO
     }
 
 
@@ -301,39 +338,56 @@ def extract_features(
 @dataclass
 class FactoredStateEncoder:
     """
-    Genera estados discretizados para las 3 Q-tables.
+    Genera estados discretizados para 2 Q-tables: Q1 (asignación) y Q3 (incidente).
+    IMPORTANTE: Usar update_prev=False en encode_all() durante choose_action y update.
+    Llamar commit() exactamente una vez por tick para actualizar prev_traffic_pressure.
     """
 
     episode_len: int = 900
     prev_traffic_pressure: float = 1.0  # Normalizado
 
+    # Umbral para activar Q3 (cambio significativo de tráfico)
+    delta_traffic_threshold: float = 0.1
+
     def reset(self) -> None:
         """Resetea estado interno. Llamar al inicio de cada episodio."""
         self.prev_traffic_pressure = 1.0
 
-    def encode_all(self, snap: Dict, update_prev: bool = True) -> Dict[str, Tuple]:
+    def commit(self, snap: Dict) -> None:
         """
-        Retorna los 3 estados discretizados.
+        Actualiza prev_traffic_pressure. Llamar EXACTAMENTE una vez por tick,
+        después de que se haya procesado el update de Q-learning.
+        """
+        traffic_zones = snap.get("traffic_zones", {})
+        if traffic_zones:
+            self.prev_traffic_pressure = traffic_pressure_from_zones(traffic_zones)
+        else:
+            traffic_global = snap.get("traffic", "low")
+            mapping = {"low": 1.0, "medium": 1.5, "high": 2.2}
+            self.prev_traffic_pressure = mapping.get(traffic_global, 1.0)
+
+    def encode_all(self, snap: Dict, update_prev: bool = False) -> Dict[str, Tuple]:
+        """
+        Retorna los 2 estados discretizados (Q1 y Q3).
 
         Args:
             snap: Snapshot del simulador
-            update_prev: Si True, actualiza prev_traffic_pressure (solo al final del step)
+            update_prev: DEPRECATED, usar commit() en su lugar.
 
         Returns:
             {
-                "s_assign": tuple de 7 ints para Q₁,
-                "s_rebal": tuple de 5 ints para Q₂,
+                "s_assign": tuple de 8 ints para Q₁ (añadido distancia),
                 "s_incident": tuple de 4 ints para Q₃,
                 "features": dict con valores crudos (para debug/logging)
             }
         """
         features = extract_features(snap, self.episode_len, self.prev_traffic_pressure)
 
-        # Solo actualizar si se pide (evita consumir delta si se llama 2 veces)
+        # DEPRECATED: preferir commit() explícito
         if update_prev:
             self.prev_traffic_pressure = features["traffic_pressure"]
 
-        # Q₁: Estado de Asignación (7 dims)
+        # Q₁: Estado de Asignación (8 dims - AÑADIDO distancia)
         s_assign = (
             bin_time(features["t"], features["episode_len"]),
             bin_pending_unassigned(features["pending_unassigned"]),
@@ -341,16 +395,8 @@ class FactoredStateEncoder:
             bin_free_riders(features["free_riders"]),
             bin_min_slack(features["min_slack"]),
             bin_zones_congested(features["zones_congested"]),
-            bin_riders_at_restaurant(features["riders_at_restaurant"]),  # espacial
-        )
-
-        # Q₂: Estado de Rebalanceo (5 dims)
-        s_rebal = (
-            bin_backlog(features["pending_total"]),
-            bin_urgent_ratio(features["urgent_ratio"]),
-            bin_imbalance(features["std_assigned"]),
-            bin_fatigue(features["avg_fatigue"]),
-            bin_zones_congested(features["zones_congested"]),
+            bin_riders_at_restaurant(features["riders_at_restaurant"]),
+            bin_min_rider_distance(features["min_rider_to_order"]),  # NUEVO
         )
 
         # Q₃: Estado de Incidente (4 dims)
@@ -363,7 +409,6 @@ class FactoredStateEncoder:
 
         return {
             "s_assign": s_assign,
-            "s_rebal": s_rebal,
             "s_incident": s_incident,
             "features": features,
         }
@@ -373,14 +418,11 @@ class FactoredStateEncoder:
         return features["pending_unassigned"] > 0 and features["free_riders"] > 0
 
     def should_use_q3(self, features: Dict) -> bool:
-        """¿Toca revisar tráfico? (cada 60 ticks, cuando cambia)."""
-        t = features.get("t", 0)
-        # El tráfico cambia cada 60 ticks en el simulador
-        return t > 0 and t % 60 == 0
-
-    def should_use_q2(self, t: int, k: int = 10) -> bool:
-        """¿Toca rebalanceo periódico?"""
-        return t % k == 0
+        """
+        ¿Hubo cambio significativo de tráfico?
+        Activación por SEÑAL (delta_traffic > umbral), no por reloj.
+        """
+        return features["delta_traffic"] >= self.delta_traffic_threshold
 
 
 # ─────────────────────────────────────────────────────────────
@@ -389,19 +431,15 @@ class FactoredStateEncoder:
 
 
 def state_space_sizes() -> Dict[str, int]:
-    """Retorna el tamaño de cada espacio de estados."""
-    # Q₁: 5 * 5 * 4 * 4 * 5 * 4 * 3 = 24,000 (zones_congested tiene 4 bins)
-    q1_size = 5 * 5 * 4 * 4 * 5 * 4 * 3
-
-    # Q₂: 5 * 5 * 3 * 3 * 4 = 900 (zones_congested tiene 4 bins)
-    q2_size = 5 * 5 * 3 * 3 * 4
+    """Retorna el tamaño de cada espacio de estados (Q1 y Q3 solamente)."""
+    # Q₁: 5 * 5 * 4 * 4 * 5 * 4 * 3 * 4 = 96,000 (añadido bin_min_rider_distance x4)
+    q1_size = 5 * 5 * 4 * 4 * 5 * 4 * 3 * 4
 
     # Q₃: 4 * 4 * 4 * 5 = 320
     q3_size = 4 * 4 * 4 * 5
 
     return {
         "Q1_assign": q1_size,
-        "Q2_rebal": q2_size,
         "Q3_incident": q3_size,
-        "total": q1_size + q2_size + q3_size,
+        "total": q1_size + q3_size,
     }

@@ -1,7 +1,6 @@
 # core/factored_q_agent.py
 """
-Agente Q-Learning factorizado con 3 Q-tables.
-Cada Q-table maneja un contexto de decisión diferente.
+Agente Q-Learning factorizado con 2 Q-tables: Q1 (asignación) y Q3 (incidente/tráfico).
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -27,16 +26,14 @@ class FactoredQConfig:
     eps_start: float = 1.0  # epsilon inicial
     eps_min: float = 0.05  # epsilon mínimo
     eps_decay: float = 0.995  # decay por episodio
-    rebal_interval: int = 10  # cada cuántos ticks usar Q₂
 
 
 @dataclass
 class FactoredQAgent:
     """
-    Agente Q-Learning con 3 Q-tables factorizadas:
+    Agente Q-Learning con 2 Q-tables factorizadas:
     - Q1 (Asignación): cuando hay pedidos sin asignar y riders elegibles
-    - Q2 (Rebalanceo): cada K ticks para decisiones de balanceo
-    - Q3 (Incidente): cuando cambia el tráfico
+    - Q3 (Incidente): cuando cambia el tráfico significativamente
     """
 
     cfg: FactoredQConfig = field(default_factory=FactoredQConfig)
@@ -45,15 +42,11 @@ class FactoredQAgent:
 
     # Q-tables: (state, action) -> value
     Q1: Dict[Tuple[Tuple, int], float] = field(default_factory=dict)  # Asignación
-    Q2: Dict[Tuple[Tuple, int], float] = field(default_factory=dict)  # Rebalanceo
     Q3: Dict[Tuple[Tuple, int], float] = field(default_factory=dict)  # Incidente
 
-    # Acciones por Q-table
+    # Acciones por Q-table (referencia, pero usamos masking dinámico)
     actions_q1: List[int] = field(
         default_factory=lambda: [A_ASSIGN_URGENT_NEAREST, A_ASSIGN_ANY_NEAREST, A_WAIT]
-    )
-    actions_q2: List[int] = field(
-        default_factory=lambda: [A_ASSIGN_ANY_NEAREST, A_WAIT]
     )
     actions_q3: List[int] = field(default_factory=lambda: [A_REPLAN_TRAFFIC, A_WAIT])
 
@@ -80,15 +73,36 @@ class FactoredQAgent:
         q_table[(state, action)] = value
 
     def best_action(self, q_table: Dict, state: Tuple, actions: List[int]) -> int:
-        """Retorna la mejor acción según Q-values."""
-        best_a = actions[0]
-        best_v = self.get_q(q_table, state, best_a)
-        for a in actions[1:]:
-            v = self.get_q(q_table, state, a)
-            if v > best_v:
-                best_v = v
-                best_a = a
-        return best_a
+        """Retorna la mejor acción con tie-break aleatorio."""
+        q_values = [(a, self.get_q(q_table, state, a)) for a in actions]
+        max_q = max(v for _, v in q_values)
+        best_actions = [a for a, v in q_values if v == max_q]
+        return self.rng.choice(best_actions)
+
+    # ─────────────────────────────────────────────────────────────
+    # Action Masking - acciones válidas por tabla
+    # ─────────────────────────────────────────────────────────────
+
+    def _valid_actions_q1(self, features: Dict) -> List[int]:
+        """Filtra acciones inválidas para Q1 (asignación)."""
+        valid = []
+        has_urgent = features["urgent_unassigned"] > 0
+        has_pending = features["pending_unassigned"] > 0
+        has_free = features["free_riders"] > 0
+
+        if has_pending and has_free:
+            if has_urgent:
+                valid.append(A_ASSIGN_URGENT_NEAREST)
+            valid.append(A_ASSIGN_ANY_NEAREST)
+        valid.append(A_WAIT)  # Siempre válido como fallback
+        return valid
+
+    def _valid_actions_q3(self, features: Dict) -> List[int]:
+        """Filtra acciones inválidas para Q3 (incidente/tráfico)."""
+        has_busy = features["busy_riders"] > 0
+        if has_busy:
+            return [A_REPLAN_TRAFFIC, A_WAIT]
+        return [A_WAIT]
 
     # ─────────────────────────────────────────────────────────────
     # Selección de acción
@@ -97,115 +111,131 @@ class FactoredQAgent:
     def choose_action(self, snap: Dict, training: bool = True) -> int:
         """
         Decide qué acción tomar basado en el snapshot actual.
-        Selecciona automáticamente cuál Q-table usar.
+
+        PRIORIDAD:
+        1. Q1 si hay trabajo (pending > 0 AND free_riders > 0)
+        2. Q3 si cambió tráfico Y hay riders en ruta (para replan)
+        3. WAIT si no hay nada que hacer
         """
-        encoded = self.encoder.encode_all(snap)
+        encoded = self.encoder.encode_all(snap, update_prev=False)
         features = encoded["features"]
-        t = features["t"]
 
-        # Prioridad de Q-tables:
-        # 1. Q₃ si hubo cambio de tráfico
-        # 2. Q₁ si hay trabajo por asignar
-        # 3. Q₂ si toca rebalanceo periódico
-        # 4. Default: WAIT
+        has_work = features["pending_unassigned"] > 0 and features["free_riders"] > 0
+        has_riders_in_route = features["busy_riders"] > 0
+        traffic_changed = self.encoder.should_use_q3(features)
 
-        if self.encoder.should_use_q3(features):
-            return self._choose_from_q3(encoded["s_incident"], training)
+        # PRIORIDAD 1: Siempre asignar si hay trabajo
+        if has_work:
+            return self._choose_from_q1(encoded["s_assign"], features, training)
 
-        if self.encoder.should_use_q1(features):
-            return self._choose_from_q1(encoded["s_assign"], training)
+        # PRIORIDAD 2: Replanificar solo si cambió tráfico Y hay riders activos
+        if traffic_changed and has_riders_in_route:
+            return self._choose_from_q3(encoded["s_incident"], features, training)
 
-        if self.encoder.should_use_q2(t, self.cfg.rebal_interval):
-            return self._choose_from_q2(encoded["s_rebal"], training)
-
-        # No hay nada que hacer
+        # Sin trabajo, esperar
         self.last_q_used = "none"
         return A_WAIT
 
-    def _choose_from_q1(self, state: Tuple, training: bool) -> int:
-        """Elige acción desde Q₁ (Asignación)."""
+    def _choose_from_q1(self, state: Tuple, features: Dict, training: bool) -> int:
+        """Elige acción desde Q₁ (Asignación) con action masking."""
         self.last_q_used = "Q1"
+        valid = self._valid_actions_q1(features)
         if training and self.rng.random() < self.epsilon:
-            return self.rng.choice(self.actions_q1)
-        return self.best_action(self.Q1, state, self.actions_q1)
+            return self.rng.choice(valid)
+        return self.best_action(self.Q1, state, valid)
 
-    def _choose_from_q2(self, state: Tuple, training: bool) -> int:
-        """Elige acción desde Q₂ (Rebalanceo)."""
-        self.last_q_used = "Q2"
-        if training and self.rng.random() < self.epsilon:
-            return self.rng.choice(self.actions_q2)
-        return self.best_action(self.Q2, state, self.actions_q2)
-
-    def _choose_from_q3(self, state: Tuple, training: bool) -> int:
-        """Elige acción desde Q₃ (Incidente)."""
+    def _choose_from_q3(self, state: Tuple, features: Dict, training: bool) -> int:
+        """Elige acción desde Q₃ (Incidente) con action masking."""
         self.last_q_used = "Q3"
+        valid = self._valid_actions_q3(features)
         if training and self.rng.random() < self.epsilon:
-            return self.rng.choice(self.actions_q3)
-        return self.best_action(self.Q3, state, self.actions_q3)
+            return self.rng.choice(valid)
+        return self.best_action(self.Q3, state, valid)
 
     # ─────────────────────────────────────────────────────────────
-    # Update (Q-Learning)
+    # Update (Q-Learning con Unified Value Estimation + Masking)
     # ─────────────────────────────────────────────────────────────
+
+    def get_max_q_for_next_state(self, snap_next: Dict) -> float:
+        """
+        Calcula max Q del estado siguiente usando la tabla que estará activa en t+1.
+        Aplica action masking: solo considera acciones válidas en s'.
+
+        Returns:
+            float: max_a Q(s', a) de la tabla aplicable en s', sobre acciones válidas.
+        """
+        encoded = self.encoder.encode_all(snap_next, update_prev=False)
+        features = encoded["features"]
+
+        has_work = features["pending_unassigned"] > 0 and features["free_riders"] > 0
+        has_riders_in_route = features["busy_riders"] > 0
+        traffic_changed = self.encoder.should_use_q3(features)
+
+        # Misma lógica que choose_action + action masking
+        if has_work:
+            state = encoded["s_assign"]
+            valid = self._valid_actions_q1(features)
+            if not valid:  # Fallback de seguridad
+                return 0.0
+            return max(self.get_q(self.Q1, state, a) for a in valid)
+
+        if traffic_changed and has_riders_in_route:
+            state = encoded["s_incident"]
+            valid = self._valid_actions_q3(features)
+            if not valid:  # Fallback de seguridad
+                return 0.0
+            return max(self.get_q(self.Q3, state, a) for a in valid)
+
+        # Sin trabajo ni replan, valor terminal
+        return 0.0
 
     def update(
         self, snap: Dict, action: int, reward: float, snap_next: Dict, done: bool
     ) -> None:
         """
-        Actualiza la Q-table correspondiente según cuál se usó.
+        Actualiza la Q-table correspondiente usando Unified Value Estimation.
+        Target = reward + gamma * get_max_q_for_next_state(snap_next)
         """
-        encoded = self.encoder.encode_all(snap)
-        encoded_next = self.encoder.encode_all(snap_next)
+        if self.last_q_used == "none":
+            return  # No actualizamos si no se usó ninguna tabla
 
-        if self.last_q_used == "Q1":
-            self._update_q1(
-                encoded["s_assign"], action, reward, encoded_next["s_assign"], done
-            )
-        elif self.last_q_used == "Q2":
-            self._update_q2(
-                encoded["s_rebal"], action, reward, encoded_next["s_rebal"], done
-            )
-        elif self.last_q_used == "Q3":
-            self._update_q3(
-                encoded["s_incident"], action, reward, encoded_next["s_incident"], done
-            )
-        # Si last_q_used == "none", no actualizamos nada
+        # Codificar estado actual
+        encoded = self.encoder.encode_all(snap, update_prev=False)
 
-    def _update_q_table(
-        self,
-        q_table: Dict,
-        state: Tuple,
-        action: int,
-        reward: float,
-        next_state: Tuple,
-        done: bool,
-        actions: List[int],
-    ) -> float:
-        """Actualización Q-Learning estándar. Retorna delta Q."""
-        q_old = self.get_q(q_table, state, action)
-
+        # Calcular target con Unified Value Estimation
         if done:
             target = reward
         else:
-            # max_a' Q(s', a')
-            best_next = max(self.get_q(q_table, next_state, a) for a in actions)
-            target = reward + self.cfg.gamma * best_next
+            max_q_next = self.get_max_q_for_next_state(snap_next)
+            target = reward + self.cfg.gamma * max_q_next
 
+        # Actualizar la tabla que se usó en este tick
+        if self.last_q_used == "Q1":
+            state = encoded["s_assign"]
+            self._unified_update(self.Q1, state, action, target)
+        elif self.last_q_used == "Q3":
+            state = encoded["s_incident"]
+            self._unified_update(self.Q3, state, action, target)
+
+    def _unified_update(
+        self, q_table: Dict, state: Tuple, action: int, target: float
+    ) -> None:
+        """Actualización Q-Learning con target pre-calculado."""
+        q_old = self.get_q(q_table, state, action)
         delta = abs(self.cfg.alpha * (target - q_old))
         q_new = q_old + self.cfg.alpha * (target - q_old)
         self.set_q(q_table, state, action, q_new)
 
-        # Trackear máximo delta del episodio
-        self.max_delta_q = max(self.max_delta_q, delta)
-        return delta
+        # Tracking
+        if delta > self.max_delta_q:
+            self.max_delta_q = delta
 
-    def _update_q1(self, s: Tuple, a: int, r: float, s2: Tuple, done: bool) -> None:
-        self._update_q_table(self.Q1, s, a, r, s2, done, self.actions_q1)
-
-    def _update_q2(self, s: Tuple, a: int, r: float, s2: Tuple, done: bool) -> None:
-        self._update_q_table(self.Q2, s, a, r, s2, done, self.actions_q2)
-
-    def _update_q3(self, s: Tuple, a: int, r: float, s2: Tuple, done: bool) -> None:
-        self._update_q_table(self.Q3, s, a, r, s2, done, self.actions_q3)
+    def commit_encoder(self, snap: Dict) -> None:
+        """
+        Actualiza prev_traffic_pressure del encoder.
+        Llamar EXACTAMENTE una vez por tick, después del update(), con snap (pre-step).
+        """
+        self.encoder.commit(snap)
 
     # ─────────────────────────────────────────────────────────────
     # Epsilon decay
@@ -223,12 +253,10 @@ class FactoredQAgent:
         """Guarda las Q-tables y configuración."""
         payload = {
             "Q1": self.Q1,
-            "Q2": self.Q2,
             "Q3": self.Q3,
             "epsilon": self.epsilon,
             "cfg": self.cfg,
             "actions_q1": self.actions_q1,
-            "actions_q2": self.actions_q2,
             "actions_q3": self.actions_q3,
         }
         with open(path, "wb") as f:
@@ -236,7 +264,7 @@ class FactoredQAgent:
 
     @staticmethod
     def load(path: str, episode_len: int = 900) -> "FactoredQAgent":
-        """Carga un agente desde archivo."""
+        """Carga un agente desde archivo. Migra archivos antiguos con Q2."""
         with open(path, "rb") as f:
             payload = pickle.load(f)
 
@@ -245,12 +273,11 @@ class FactoredQAgent:
             encoder=FactoredStateEncoder(episode_len=episode_len),
         )
         agent.Q1 = payload["Q1"]
-        agent.Q2 = payload["Q2"]
         agent.Q3 = payload["Q3"]
         agent.epsilon = payload.get("epsilon", payload["cfg"].eps_min)
         agent.actions_q1 = payload.get("actions_q1", agent.actions_q1)
-        agent.actions_q2 = payload.get("actions_q2", agent.actions_q2)
         agent.actions_q3 = payload.get("actions_q3", agent.actions_q3)
+        # Nota: Q2 ignorado si existe en archivos antiguos
         return agent
 
     # ─────────────────────────────────────────────────────────────
@@ -261,9 +288,8 @@ class FactoredQAgent:
         """Retorna estadísticas del agente."""
         return {
             "Q1_entries": len(self.Q1),
-            "Q2_entries": len(self.Q2),
             "Q3_entries": len(self.Q3),
-            "total_entries": len(self.Q1) + len(self.Q2) + len(self.Q3),
+            "total_entries": len(self.Q1) + len(self.Q3),
             "epsilon": self.epsilon,
             "max_delta_q": self.max_delta_q,
         }
