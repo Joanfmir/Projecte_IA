@@ -230,23 +230,14 @@ class Simulator:
             return
 
         rider.available = False
-        rider.delivery_queue = self._sorted_drop_queue(rider)
+        pending_orders = [
+            o for o in (self._get_order(oid) for oid in rider.assigned_order_ids) if o
+        ]
+        waypoints, dq = self.assigner.best_plan_for_rider(rider, pending_orders)
 
-        waypoints: List[Node] = []
-
-        if not rider.has_picked_up:
-            waypoints.append(self.restaurant)
-
-        for oid in rider.delivery_queue:
-            o = self._get_order(oid)
-            if o is not None:
-                waypoints.append(o.dropoff)
-
-        waypoints.append(self.restaurant)
-
+        rider.delivery_queue = dq
         rider.waypoints = waypoints
         rider.waypoint_idx = 0
-
         tgt = rider.current_target()
         if tgt is None:
             rider.route = []
@@ -384,12 +375,12 @@ class Simulator:
     # -------------------
     # Movimiento + FATIGA
     # -------------------
-    def move_riders_one_tick(self) -> Tuple[List[Order], int]:
+    def move_riders_one_tick(self) -> Tuple[List[Order], int, float]:
         """
         Mueve riders un tick y procesa pickups/deliveries.
 
         Returns:
-            Tuple[List[Order], int]: (pedidos entregados, número de pickups)
+            Tuple[List[Order], int, float]: (pedidos entregados, número de pickups, distancia recorrida)
         """
         # --- parámetros fatiga (ajústalos aquí) ---
         FAT_STOP = 8.0  # si llega >= 8, se para
@@ -401,6 +392,7 @@ class Simulator:
 
         delivered_now: List[Order] = []
         picked_up_count: int = 0  # Reward shaping: contador de pickups
+        distance_moved: float = 0.0
 
         for r in self.fm.get_all():
             # --- 1) regeneración base ---
@@ -436,6 +428,7 @@ class Simulator:
                 nxt = r.route.pop(0)
                 r.position = nxt
                 r.distance_travelled += 1.0
+                distance_moved += 1.0
                 r.fatigue += FAT_MOVE_INC  # ✅ sube al moverse
 
             tgt = r.current_target()
@@ -449,6 +442,14 @@ class Simulator:
                     and (not r.has_picked_up)
                     and r.assigned_order_ids
                 ):
+                    # Esperar en restaurante si queda backlog por asignar y hay capacidad
+                    remaining_unassigned = [
+                        o for o in self.om.get_pending_orders() if o.assigned_to is None
+                    ]
+                    if remaining_unassigned and r.can_take_more():
+                        r.available = False
+                        continue
+
                     r.has_picked_up = True
 
                     # ✅ marcar picked_up_at en todos sus pedidos pendientes
@@ -503,7 +504,7 @@ class Simulator:
                 else:
                     self._rebuild_plan_for_rider(r)
 
-        return delivered_now, picked_up_count
+        return delivered_now, picked_up_count, distance_moved
 
     # -------------------
     # State + Reward
@@ -538,7 +539,11 @@ class Simulator:
         )
 
     def compute_reward(
-        self, delivered_now: List[Order], picked_up_count: int = 0
+        self,
+        delivered_now: List[Order],
+        picked_up_count: int = 0,
+        activation_count: int = 0,
+        distance_moved: float = 0.0,
     ) -> float:
         """
         Calcula reward con shaping para pickups.
@@ -549,6 +554,8 @@ class Simulator:
         - -10.0 -2*late por entrega tardía
         - -0.3 por pedido SIN ASIGNAR (no penaliza los que están en camino)
         - -0.02 * avg_fatigue (reducido para no dominar)
+        - -activation_cost por cada rider que pasa de 0->1 pedidos (coste operativo)
+        - -0.1 por cada unidad de distancia recorrida (eficiencia de ruta)
         """
         r = 0.0
 
@@ -566,72 +573,71 @@ class Simulator:
         # CORRECCIÓN CRÍTICA: Solo penalizar pedidos SIN ASIGNAR
         # Antes: penalizaba TODOS los pendientes, incluso los que ya estaban en camino
         unassigned = [o for o in self.om.get_pending_orders() if o.assigned_to is None]
-        r -= 0.3 * len(unassigned)
+        r -= 0.5 * len(unassigned)
+
+        # Coste de activar riders (batching friendly)
+        r -= self.assigner.activation_cost * activation_count
 
         # Fatigue penalty REDUCIDO para no dominar el reward
         avg_fat = sum(x.fatigue for x in self.fm.get_all()) / max(
             1, len(self.fm.get_all())
         )
         r -= 0.02 * avg_fat
+
+        # Coste por movimiento (estimula rutas compactas / batching)
+        r -= 0.1 * distance_moved
         return r
 
     # -------------------
     # Acción -> estrategia (CON BATCHING)
     # -------------------
-    def apply_action(self, action: int) -> int:
+    def apply_action(self, action: int) -> Tuple[int, int]:
         """
         Aplica la acción seleccionada.
-        BATCHING: Asigna TODOS los pedidos posibles en un solo tick,
-        no solo uno. Esto da una señal de reward más clara al agente.
+        BATCHING: asigna SOLO un par (pedido, rider) por tick.
 
         Returns:
-            int: Número de asignaciones realizadas en este tick.
+            Tuple[int, int]: (#asignaciones, #activaciones_nuevas)
         """
         assigned_count = 0
+        activation_count = 0
 
         if action == A_ASSIGN_URGENT_NEAREST:
-            # Bucle: asignar todos los urgentes posibles
-            while True:
-                orders = self.om.get_pending_orders()
-                # F3 FIX: Usar get_all() para que AssignmentEngine filtre elegibles
-                # Esto permite asignar 2do pedido a rider en restaurante con available=False
-                riders = self.fm.get_all()
-                pick = self.assigner.pick_urgent_nearest(orders, riders, now=self.t)
-                if pick:
-                    o, r = pick
-                    self.assigner.assign(o, r)
-                    self._rebuild_plan_for_rider(r)
-                    assigned_count += 1
-                else:
-                    break
-            return assigned_count
+            orders = self.om.get_pending_orders()
+            riders = self.fm.get_all()
+            pick = self.assigner.pick_urgent_nearest(orders, riders, now=self.t)
+            if pick:
+                o, r = pick
+                was_empty = len(r.assigned_order_ids) == 0
+                self.assigner.assign(o, r)
+                self._rebuild_plan_for_rider(r)
+                assigned_count = 1
+                activation_count = 1 if was_empty else 0
+            return assigned_count, activation_count
 
         if action == A_ASSIGN_ANY_NEAREST:
-            # Bucle: asignar todos los pedidos posibles
-            while True:
-                orders = self.om.get_pending_orders()
-                # F3 FIX: Usar get_all() para que AssignmentEngine filtre elegibles
-                riders = self.fm.get_all()
-                pick = self.assigner.pick_any_nearest(orders, riders)
-                if pick:
-                    o, r = pick
-                    self.assigner.assign(o, r)
-                    self._rebuild_plan_for_rider(r)
-                    assigned_count += 1
-                else:
-                    break
-            return assigned_count
+            orders = self.om.get_pending_orders()
+            riders = self.fm.get_all()
+            pick = self.assigner.pick_any_nearest(orders, riders, now=self.t)
+            if pick:
+                o, r = pick
+                was_empty = len(r.assigned_order_ids) == 0
+                self.assigner.assign(o, r)
+                self._rebuild_plan_for_rider(r)
+                assigned_count = 1
+                activation_count = 1 if was_empty else 0
+            return assigned_count, activation_count
 
         if action == A_WAIT:
-            return 0
+            return 0, 0
 
         if action == A_REPLAN_TRAFFIC:
             for r in self.fm.get_all():
                 if r.waypoints:
                     self.assigner.replan_current_leg(r)
-            return 0
+            return 0, 0
 
-        return assigned_count
+        return assigned_count, activation_count
 
     # -------------------
     # STEP (MARKOVIANO)
@@ -647,13 +653,18 @@ class Simulator:
         6. Incrementar tiempo
         """
         # 1-2. Aplicar la acción elegida por el agente
-        self.apply_action(action)
+        _, activation_count = self.apply_action(action)
 
         # 3. Mover riders y procesar entregas + pickups
-        delivered_now, picked_up_count = self.move_riders_one_tick()
+        delivered_now, picked_up_count, distance_moved = self.move_riders_one_tick()
 
         # 4. Calcular reward con shaping (pickups dan +2.0 cada uno)
-        reward = self.compute_reward(delivered_now, picked_up_count)
+        reward = self.compute_reward(
+            delivered_now,
+            picked_up_count,
+            activation_count=activation_count,
+            distance_moved=distance_moved,
+        )
 
         # 5. Eventos aleatorios (DESPUÉS de la acción, afectan siguiente snapshot)
         if self.cfg.enable_internal_traffic:
