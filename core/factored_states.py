@@ -87,7 +87,7 @@ def bin_min_slack_with_sentinel(slack: int) -> int:
     """Min slack con bin reservado para 'sin pedidos' (valor <0)."""
     if slack < 0:
         return 0
-    if slack <= 0:
+    if slack == 0:
         return 1
     if slack <= 4:
         return 2

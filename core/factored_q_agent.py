@@ -78,7 +78,7 @@ class FactoredQAgent:
         q_values = [(a, self.get_q(q_table, state, a)) for a in actions]
         max_q = max(v for _, v in q_values)
         best_actions = [a for a, v in q_values if v == max_q]
-        # Desempate determinista por id de acción
+        # Deterministic tie-break by action id
         return sorted(best_actions)[0]
 
     # ─────────────────────────────────────────────────────────────

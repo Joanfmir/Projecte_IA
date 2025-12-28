@@ -36,7 +36,7 @@ def test_batching_prefers_partial_rider_cluster():
         seed=77,
     )
     sim = Simulator(cfg)
-    # Crear 3 pedidos cercanos (cluster) con holgura suficiente
+    # Create 3 clustered orders with enough slack
     neighbors = [nb for nb, _ in sim.graph.neighbors(sim.restaurant)]
     drops = neighbors[:3]
     if len(drops) < 3:
@@ -93,7 +93,7 @@ def test_wait_updates_q_value_on_backlog():
         dropoff=(sim.restaurant[0] + 1, sim.restaurant[1]),
         now=0,
         max_eta=8,
-        priority=2,  # urgente
+        priority=2,  # urgent
     )
 
     agent = _base_agent(cfg, seed=101)
@@ -106,8 +106,6 @@ def test_wait_updates_q_value_on_backlog():
     snap_next = sim.snapshot()
 
     encoded = agent.encoder.encode_all(snap)
-    agent.last_q_used = "Q1"
-    agent.last_action = action
     agent.update(snap, action, reward, snap_next, done)
 
     q_wait = agent.get_q(agent.Q1, encoded["s_assign"], A_WAIT)

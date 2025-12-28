@@ -394,6 +394,10 @@ class Simulator:
         picked_up_count: int = 0  # Reward shaping: contador de pickups
         distance_moved: float = 0.0
 
+        remaining_unassigned_global = [
+            o for o in self.om.get_pending_orders() if o.assigned_to is None
+        ]
+
         for r in self.fm.get_all():
             # --- 1) regeneración base ---
             resting = bool(getattr(r, "resting", False))
@@ -443,10 +447,7 @@ class Simulator:
                     and r.assigned_order_ids
                 ):
                     # Esperar en restaurante si queda backlog por asignar y hay capacidad
-                    remaining_unassigned = [
-                        o for o in self.om.get_pending_orders() if o.assigned_to is None
-                    ]
-                    if remaining_unassigned and r.can_take_more():
+                    if remaining_unassigned_global and r.can_take_more():
                         r.available = False
                         continue
 

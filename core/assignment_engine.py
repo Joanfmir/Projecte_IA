@@ -97,6 +97,7 @@ class AssignmentEngine:
         drop_list = [(o.order_id, o.dropoff) for o in pending_orders]
         best_cost = float("inf")
         best_perm: Optional[Tuple[Tuple[int, Node], ...]] = None
+        best_key: Optional[Tuple[int, ...]] = None
 
         need_pickup = not rider.has_picked_up
 
@@ -114,11 +115,10 @@ class AssignmentEngine:
             cost += self._path_cost(current, self.restaurant_pos)
 
             perm_key = tuple(pid for pid, _ in perm)
-            if cost < best_cost or (cost == best_cost and perm_key < tuple(
-                pid for pid, _ in (best_perm or ())
-            )):
+            if cost < best_cost or (cost == best_cost and (best_key is None or perm_key < best_key)):
                 best_cost = cost
                 best_perm = perm
+                best_key = perm_key
 
         if best_perm is None:
             return float("inf"), [], []
@@ -172,6 +172,8 @@ class AssignmentEngine:
                 if len(assigned_orders) >= r.capacity:
                     continue
 
+                activation_penalty = self.activation_cost if len(assigned_orders) == 0 else 0.0
+
                 delta = self._delta_cost_for_candidate(r, assigned_orders, o)
                 if delta == float("inf"):
                     continue
@@ -182,7 +184,6 @@ class AssignmentEngine:
                 if is_partial and (slack - delta) < -self.slack_tolerance:
                     continue
 
-                activation_penalty = self.activation_cost if len(assigned_orders) == 0 else 0.0
                 effective_cost = delta + activation_penalty
 
                 candidates.append(
