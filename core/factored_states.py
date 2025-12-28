@@ -323,10 +323,11 @@ def extract_features(
 
     for r in riders:
         count = active_count(r)
+        capacity_r = r.get("capacity", 3)
         resting = r.get("resting", False)
         if count == 0:
             empty_riders += 1
-        elif count < 3:
+        elif count < capacity_r:
             partial_riders += 1
             if not resting:
                 partial_pool.append(r)
