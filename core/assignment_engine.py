@@ -238,7 +238,7 @@ class AssignmentEngine:
             rider.assigned_order_ids.append(order.order_id)
         rider.available = False
         # Si está en restaurante, obligamos a nuevo pickup (para batching correcto)
-        if rider.position == self.restaurant_pos:
+        if rider.position == self.restaurant_pos and not getattr(rider, "delivery_queue", []):
             rider.has_picked_up = False
 
     def replan_current_leg(self, rider: Rider) -> None:
