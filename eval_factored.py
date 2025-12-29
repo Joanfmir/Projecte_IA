@@ -219,6 +219,7 @@ def run_episode_with_events(
     delivered_total = snap_end.get("delivered_total", 0)
     ontime = snap_end.get("delivered_ontime", 0)
     late = snap_end.get("delivered_late", 0)
+    ticks_total = snap_end.get("t", action_count)
 
     return EpisodeMetrics(
         seed=sim.cfg.seed,
@@ -241,7 +242,7 @@ def run_episode_with_events(
         road_closures_total=road_closures_total,
         q1_used=q_usage["Q1"],
         q3_used=q_usage["Q3"],
-        ticks_total=action_count,
+        ticks_total=ticks_total,
         wait_count=wait_count,
         action_count=action_count,
         wait_ratio=wait_count / action_count if action_count else 0.0,
