@@ -618,17 +618,21 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
     """Entrenamiento en modo actor-learner con multiprocessing."""
     os.makedirs(cfg.out_dir, exist_ok=True)
 
+    n_episodes = cfg.n_episodes
+    max_steps = cfg.max_steps_per_episode
     if cfg.fast:
-        cfg.n_episodes = min(cfg.n_episodes, FAST_EPISODES)
-        cfg.max_steps_per_episode = min(cfg.max_steps_per_episode, FAST_MAX_TICKS)
+        n_episodes = min(n_episodes, FAST_EPISODES)
+        max_steps = min(max_steps, FAST_MAX_TICKS)
 
     try:
-        mp.set_start_method("spawn", force=True)
+        current_method = mp.get_start_method(allow_none=True)
+        if current_method != "spawn":
+            mp.set_start_method("spawn")
     except RuntimeError:
         # Ya estaba configurado
         pass
 
-    base_cfg = _build_base_sim_config(cfg.max_steps_per_episode, cfg.base_seed)
+    base_cfg = _build_base_sim_config(max_steps, cfg.base_seed)
     metrics_path = cfg.metrics_path
     q_path = cfg.q_path
     metrics_dir = os.path.dirname(metrics_path)
@@ -640,22 +644,22 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
 
     # Cargar agente (compatibilidad con checkpoints existentes)
     if cfg.init_q_path and os.path.exists(cfg.init_q_path):
-        agent = FactoredQAgent.load(cfg.init_q_path, episode_len=cfg.max_steps_per_episode)
+        agent = FactoredQAgent.load(cfg.init_q_path, episode_len=max_steps)
         print(f"Checkpoint inicial cargado: {cfg.init_q_path}")
     elif os.path.exists(q_path):
-        agent = FactoredQAgent.load(q_path, episode_len=cfg.max_steps_per_episode)
+        agent = FactoredQAgent.load(q_path, episode_len=max_steps)
         print(f"Checkpoint existente cargado: {q_path}")
     else:
         agent = FactoredQAgent(
             cfg=FactoredQConfig(),
-            encoder=FactoredStateEncoder(episode_len=cfg.max_steps_per_episode),
+            encoder=FactoredStateEncoder(episode_len=max_steps),
             seed=cfg.base_seed,
         )
 
     eps_start = cfg.epsilon_start if cfg.epsilon_start is not None else agent.epsilon
     agent.epsilon = eps_start
     scheduler = _epsilon_scheduler(
-        eps_start, cfg.epsilon_end, cfg.epsilon_decay_steps or cfg.n_episodes
+        eps_start, cfg.epsilon_end, cfg.epsilon_decay_steps or n_episodes
     )
 
     t0 = time.time()
@@ -701,8 +705,8 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
 
         with mp.Pool(processes=cfg.n_workers) as pool:
             episode = 1
-            while episode <= cfg.n_episodes:
-                chunk_end = min(cfg.n_episodes, episode + cfg.sync_every - 1)
+            while episode <= n_episodes:
+                chunk_end = min(n_episodes, episode + cfg.sync_every - 1)
                 snapshot = _snapshot_agent(agent)
                 snapshot_version += 1
 
@@ -714,7 +718,7 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
                             base_cfg.__dict__,
                             snapshot,
                             scheduler(ep - 1),
-                            cfg.max_steps_per_episode,
+                            max_steps,
                             cfg.base_seed,
                         ),
                     )
@@ -723,6 +727,7 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
 
                 buffer: Dict[int, EpisodeResult] = {}
                 expected = episode
+                idle_wait = 0.01
 
                 while expected <= chunk_end:
                     for ep, task in list(tasks.items()):
@@ -818,16 +823,18 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
                             f.flush()
 
                         expected += 1
+                        idle_wait = 0.01
                     else:
-                        time.sleep(0.05)
+                        time.sleep(idle_wait)
+                        idle_wait = min(idle_wait * 2, 0.1)
 
                 episode = chunk_end + 1
 
     agent.save(q_path)
     print(f"\nEntrenamiento paralelo finalizado. Q-table: {q_path}")
-    print(f"Epsilon inicial={eps_start:.4f}, final={scheduler(cfg.n_episodes - 1):.4f}")
+    print(f"Epsilon inicial={eps_start:.4f}, final={scheduler(n_episodes - 1):.4f}")
     print(
-        f"Episodios={cfg.n_episodes}, updates={global_updates}, steps={global_steps}"
+        f"Episodios={n_episodes}, updates={global_updates}, steps={global_steps}"
     )
     print(f"Métricas guardadas en: {metrics_path}")
 
