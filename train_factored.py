@@ -22,8 +22,8 @@ from core.factored_q_agent import FactoredQAgent, FactoredQConfig
 
 FAST_EPISODES = 2
 FAST_MAX_TICKS = 200
-WORKER_SEED_STRIDE = 9973
-EVAL_SEED_OFFSET = 100_000
+WORKER_SEED_STRIDE = 9973  # Primo para espaciar seeds entre episodios/worker
+EVAL_SEED_OFFSET = 100_000  # Evita solaparse con semillas de entrenamiento
 
 
 @dataclass
@@ -99,8 +99,7 @@ def _epsilon_scheduler(
     epsilon_start = float(epsilon_start)
     epsilon_end = float(epsilon_end)
     if decay_steps <= 0:
-        bounded_start = max(epsilon_end, epsilon_start)
-        return lambda _: bounded_start
+        return lambda _: epsilon_start
 
     span = max(1, decay_steps)
 
@@ -631,6 +630,7 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
     try:
         current_method = mp.get_start_method(allow_none=True)
         if current_method != "spawn":
+            # spawn evita compartir estado/PRNG del simulador entre procesos
             mp.set_start_method("spawn")
     except RuntimeError:
         # Ya estaba configurado
@@ -735,7 +735,6 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
 
                 buffer: Dict[int, EpisodeResult] = {}
                 expected = episode
-                idle_wait = 0.01
 
                 while expected <= chunk_end:
                     for ep, task in list(tasks.items()):
@@ -832,10 +831,8 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
                             f.flush()
 
                         expected += 1
-                        idle_wait = 0.01
                     else:
-                        time.sleep(idle_wait)
-                        idle_wait = min(idle_wait * 2, 0.1)
+                        time.sleep(0.01)
 
                 episode = chunk_end + 1
 

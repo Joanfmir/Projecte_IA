@@ -15,7 +15,7 @@
 - `--log-every`, `--save-every`, `--qpath`, `--metrics-path`: control de I/O.
 
 ### Schedule de epsilon
-`epsilon(t) = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * min(t, decay_steps) / decay_steps)` con `t` = episodio global (0-index). Monótono y acotado.
+`epsilon(t) = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * min(t, decay_steps) / decay_steps)`, donde `t` es el episodio global (0-index). Monótono y acotado.
 
 ### Medición rápida (smoke, 4 episodios, 200 steps, seed=123)
 | modo | workers | tiempo total | reward medio | wait_ratio | batching_eff | avg_rider_load |
