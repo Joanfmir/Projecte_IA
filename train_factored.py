@@ -8,6 +8,7 @@ import copy
 import multiprocessing as mp
 import os
 import csv
+import random
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -283,6 +284,7 @@ def _evaluate_greedy(
     for i in range(n_episodes):
         cfg = SimConfig(**base_cfg.__dict__)
         cfg.seed = base_seed + EVAL_SEED_OFFSET + i
+        agent.rng = random.Random(cfg.seed)  # garantiza desempates deterministas en eval
 
         sim = Simulator(cfg)
         total_r = 0.0
@@ -330,12 +332,14 @@ def _evaluate_greedy(
             agent.commit_encoder(snap)
             snap = snap_next
 
+        snap_end = sim.snapshot()
         rewards.append(total_r)
         wait_ratios.append(wait_count / action_count if action_count else 0.0)
         avg_loads.append(
             load_positive_sum / load_positive_count if load_positive_count else 0.0
         )
-        batching_eff.append(ticks_with_batching / max(1, steps))
+        ticks_total = snap_end.get("t", steps)
+        batching_eff.append(ticks_with_batching / max(1, ticks_total))
 
     agent.epsilon = prev_eps
     return {
@@ -529,6 +533,7 @@ def train(
                 pending_avg = pending_sum / max(1, steps)
                 elapsed = time.time() - t0
                 max_delta = agent.get_max_delta()
+                ticks_total = snap_end.get("t", steps)
 
                 last_rewards.append(total_r)
                 last_deltas.append(max_delta)
@@ -541,7 +546,7 @@ def train(
                     else 0.0
                 )
                 batching_efficiency = (
-                    ticks_with_batching / steps if steps else 0.0
+                    ticks_with_batching / ticks_total if ticks_total else 0.0
                 )
                 activated_riders_count = len(activated_riders)
 
@@ -746,7 +751,7 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
                         result = buffer.pop(expected)
                         epsilon_ep = epsilon_for_episode(expected)
                         apply_stats = _apply_episode_to_agent(agent, result, epsilon_ep)
-                        agent.epsilon = scheduler(expected)
+                        agent.epsilon = epsilon_for_episode(expected + 1)
 
                         global_updates += len(result.transitions)
                         global_steps += result.steps
@@ -754,6 +759,7 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
                             q_usage_total[k] += result.q_usage.get(k, 0)
 
                         pending_avg = result.pending_sum / max(1, result.steps)
+                        ticks_total = result.snap_end.get("t", result.steps)
                         wait_ratio = (
                             result.wait_count / result.action_count
                             if result.action_count
@@ -765,8 +771,8 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
                             else 0.0
                         )
                         batching_efficiency = (
-                            result.ticks_with_batching / result.steps
-                            if result.steps
+                            result.ticks_with_batching / ticks_total
+                            if ticks_total
                             else 0.0
                         )
 
