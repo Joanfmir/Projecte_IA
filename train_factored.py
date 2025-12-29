@@ -16,6 +16,9 @@ from core.dispatch_policy import A_WAIT
 from core.factored_states import FactoredStateEncoder
 from core.factored_q_agent import FactoredQAgent, FactoredQConfig
 
+FAST_EPISODES = 2
+FAST_MAX_TICKS = 200
+
 
 def train(
     n_episodes: int = 500,
@@ -32,8 +35,8 @@ def train(
     os.makedirs(out_dir, exist_ok=True)
 
     if fast:
-        n_episodes = min(n_episodes, 2)
-        episode_len = min(episode_len, 200)
+        n_episodes = min(n_episodes, FAST_EPISODES)
+        episode_len = min(episode_len, FAST_MAX_TICKS)
     flush_every = max(1, flush_every)
     checkpoint_every = max(1, checkpoint_every)
 
@@ -268,7 +271,7 @@ def train(
                     else:
                         episodes_below_threshold = 0
             finally:
-                # Simulator no expone método explícito de cierre; liberamos la referencia
+                # Simulator no ofrece un método explícito de cierre; liberamos la referencia
                 del sim
             if should_break:
                 break
@@ -319,7 +322,7 @@ if __name__ == "__main__":
         "--fast",
         "--debug",
         action="store_true",
-        help="Modo rápido: 2 episodios de 200 ticks para smoke test",
+        help=f"Modo rápido: {FAST_EPISODES} episodios de {FAST_MAX_TICKS} ticks para smoke test",
     )
     args = parser.parse_args()
 

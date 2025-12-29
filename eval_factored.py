@@ -20,6 +20,9 @@ from core.dispatch_policy import (
 )
 from core.factored_q_agent import FactoredQAgent
 
+FAST_EPISODES = 2
+FAST_MAX_TICKS = 200
+
 
 @dataclass
 class EvalConfig:
@@ -456,11 +459,12 @@ def main():
         "--fast",
         "--debug",
         action="store_true",
-        help="Modo rápido: 2 episodios de 200 ticks para smoke test",
+        help=f"Modo rápido: {FAST_EPISODES} episodios de {FAST_MAX_TICKS} ticks para smoke test",
     )
     args = parser.parse_args()
 
     enable_road_closures = args.closures and not args.no_closures
+    # --closures habilita, --no-closures fuerza OFF
 
     base_seed = args.seed
     if base_seed is not None and base_seed < 0:
@@ -475,8 +479,8 @@ def main():
     )
 
     if args.fast:
-        cfg.n_episodes = min(cfg.n_episodes, 2)
-        cfg.episode_len = min(cfg.episode_len, 200)
+        cfg.n_episodes = min(cfg.n_episodes, FAST_EPISODES)
+        cfg.episode_len = min(cfg.episode_len, FAST_MAX_TICKS)
 
     evaluate(cfg)
 
