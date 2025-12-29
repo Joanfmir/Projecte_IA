@@ -9,7 +9,7 @@ import statistics
 import json
 import random
 from dataclasses import dataclass, asdict
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from simulation.simulator import Simulator, SimConfig
 from core.dispatch_policy import (
@@ -19,6 +19,7 @@ from core.dispatch_policy import (
     A_REPLAN_TRAFFIC,
 )
 from core.factored_q_agent import FactoredQAgent
+from core.factored_states import FactoredStateEncoder  # manteniendo compatibilidad de imports
 
 
 @dataclass
@@ -219,7 +220,11 @@ def run_episode_with_events(
     delivered_total = snap_end.get("delivered_total", 0)
     ontime = snap_end.get("delivered_ontime", 0)
     late = snap_end.get("delivered_late", 0)
-    ticks_total = snap_end.get("t", action_count)
+    ticks_total = snap_end.get("t", 0)
+    wait_ratio = wait_count / action_count if action_count else 0.0
+    batching_efficiency = (
+        ticks_with_batching / ticks_total if ticks_total else 0.0
+    )
 
     return EpisodeMetrics(
         seed=sim.cfg.seed,
@@ -245,13 +250,11 @@ def run_episode_with_events(
         ticks_total=ticks_total,
         wait_count=wait_count,
         action_count=action_count,
-        wait_ratio=wait_count / action_count if action_count else 0.0,
+        wait_ratio=wait_ratio,
         avg_rider_load=(
             load_positive_sum / load_positive_count if load_positive_count else 0.0
         ),
-        batching_efficiency=(
-            ticks_with_batching / action_count if action_count else 0.0
-        ),
+        batching_efficiency=batching_efficiency,
         activated_riders=len(activated_riders),
     )
 
@@ -268,14 +271,14 @@ def make_heuristic_policy():
 def make_factored_policy(q_path: str, episode_len: int):
     """Política basada en agente factorizado entrenado."""
     agent = FactoredQAgent.load(q_path, episode_len=episode_len)
-    agent._eval_prev_epsilon = agent.epsilon
+    prev_epsilon = agent.epsilon
     agent.epsilon = 0.0  # Greedy en evaluación
 
     def policy(sim, snap):
         action = agent.choose_action(snap, training=False)
         return action, agent.last_q_used
 
-    return policy, agent
+    return policy, agent, prev_epsilon
 
 
 def evaluate(cfg: EvalConfig):
@@ -294,9 +297,12 @@ def evaluate(cfg: EvalConfig):
 
     # Crear políticas
     heuristic_policy = make_heuristic_policy()
+    agent_prev_epsilon: Optional[float] = None
 
     try:
-        factored_policy, agent = make_factored_policy(cfg.q_path, cfg.episode_len)
+        factored_policy, agent, agent_prev_epsilon = make_factored_policy(
+            cfg.q_path, cfg.episode_len
+        )
         has_trained = True
         print(f"Agente cargado: {agent.stats()}")
     except FileNotFoundError:
@@ -330,21 +336,25 @@ def evaluate(cfg: EvalConfig):
 
         # Evaluar heurística
         sim_h = Simulator(sim_cfg)
-        metrics_h = run_episode_with_events(
-            sim_h, heuristic_policy, cfg, track_q_usage=False
-        )
+        try:
+            metrics_h = run_episode_with_events(
+                sim_h, heuristic_policy, cfg, track_q_usage=False
+            )
+        finally:
+            del sim_h
         results_h.append(metrics_h)
-        del sim_h
 
         # Evaluar agente factorizado
         if has_trained:
             sim_q = Simulator(sim_cfg)
             agent.encoder.reset()
-            metrics_q = run_episode_with_events(
-                sim_q, factored_policy, cfg, track_q_usage=True, agent=agent
-            )
+            try:
+                metrics_q = run_episode_with_events(
+                    sim_q, factored_policy, cfg, track_q_usage=True, agent=agent
+                )
+            finally:
+                del sim_q
             results_q.append(metrics_q)
-            del sim_q
 
         print(
             f"Ep {i+1}/{cfg.n_episodes} [seed={ep_seed}] - H: {metrics_h.ontime_ratio:.2%} on-time",
@@ -405,8 +415,8 @@ def evaluate(cfg: EvalConfig):
         q_reward = sum(m.reward_total for m in results_q) / len(results_q)
         print(f"  Diferencia reward:  {q_reward - h_reward:+.1f}")
 
-        if hasattr(agent, "_eval_prev_epsilon"):
-            agent.epsilon = agent._eval_prev_epsilon
+        if agent_prev_epsilon is not None:
+            agent.epsilon = agent_prev_epsilon
 
     # Guardar resultados
     output = {

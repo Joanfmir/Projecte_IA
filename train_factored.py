@@ -268,6 +268,7 @@ def train(
                     else:
                         episodes_below_threshold = 0
             finally:
+                # Simulator no expone método explícito de cierre; liberamos la referencia
                 del sim
             if should_break:
                 break
