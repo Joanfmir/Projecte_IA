@@ -97,7 +97,8 @@ def _epsilon_scheduler(
     epsilon_start = float(epsilon_start)
     epsilon_end = float(epsilon_end)
     if decay_steps <= 0:
-        return lambda _: max(epsilon_end, min(epsilon_start, epsilon_end))
+        bounded_start = max(epsilon_end, epsilon_start)
+        return lambda _: bounded_start
 
     span = max(1, decay_steps)
 
@@ -174,7 +175,6 @@ def _run_episode_worker(
     done = False
 
     while not done:
-        pending_orders = snap.get("pending_orders", [])
         riders = snap.get("riders", [])
 
         positive_loads = 0
@@ -198,7 +198,7 @@ def _run_episode_worker(
         if batching_tick:
             ticks_with_batching += 1
 
-        pending_sum += len(pending_orders)
+        pending_sum += len(snap.get("pending_orders", []))
         steps += 1
 
         action = agent.choose_action(snap, training=True)
