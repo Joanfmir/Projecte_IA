@@ -69,7 +69,7 @@ def parse_args():
 
 
 def make_config(args) -> SimConfig:
-    # Spawn interno ON (necesitamos pedidos), tráfico interno OFF (apply_dynamic_events lo maneja)
+    # Spawn interno ON (necesitamos pedidos), tráfico interno ON (mismo régimen que entrenamiento)
     return SimConfig(
         width=args.width,
         height=args.height,
@@ -82,6 +82,7 @@ def make_config(args) -> SimConfig:
         street_width=args.street_width,
         enable_internal_spawn=True,
         enable_internal_traffic=True,  # Mismo régimen que entrenamiento
+        road_closure_prob=args.closure_prob,  # Probabilidad de cierres de calles
     )
 
 

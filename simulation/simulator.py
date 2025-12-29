@@ -326,6 +326,7 @@ class Simulator:
             "traffic": self.traffic_level,
             "traffic_zones": dict(self.traffic_zones),
             "closures": self.graph.count_closed_directed(),
+            "closed_edges": self.graph.get_closed_edges_sample(),  # Para visualizador
             "blocked": self.graph.count_blocked(),
             "width": self.cfg.width,
             "height": self.cfg.height,
@@ -374,6 +375,16 @@ class Simulator:
                 self.traffic_level = "medium"
             else:
                 self.traffic_level = "high"
+
+    def maybe_spawn_closure(self) -> None:
+        """Genera cierres de calles aleatorios según road_closure_prob."""
+        if self.cfg.road_closure_prob <= 0:
+            return
+        if self.rng.random() < self.cfg.road_closure_prob:
+            # Limitar cierres activos (máximo 10)
+            current = self.graph.count_closed_directed()
+            if current < 20:  # 10 cierres * 2 (bidireccional)
+                self.graph.random_road_incidents(self.cfg.road_closures_per_event)
 
     # -------------------
     # Movimiento + FATIGA
@@ -681,6 +692,8 @@ class Simulator:
             self.maybe_change_traffic()
         if self.cfg.enable_internal_spawn:
             self.maybe_spawn_order()
+        # Cierres de calles (siempre activo si road_closure_prob > 0)
+        self.maybe_spawn_closure()
 
         # 6. Avanzar tiempo
         self.t += 1
