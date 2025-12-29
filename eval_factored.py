@@ -171,9 +171,9 @@ def run_episode_with_events(
 
         if track_q_usage and q_used:
             q_usage[q_used] += 1
-        action_count += 1
         if action == A_WAIT:
             wait_count += 1
+        action_count += 1
 
         # === Step ===
         # Guardamos pedidos antes del step para detectar entregas

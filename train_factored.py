@@ -165,9 +165,9 @@ def train(
 
                     # Elegir acción (no modifica prev_traffic_pressure)
                     action = choose_action(snap, training=True)
-                    action_count += 1
                     if action == A_WAIT:
                         wait_count += 1
+                    action_count += 1
                     ep_q_usage[agent.last_q_used] += 1
 
                     # Ejecutar paso
