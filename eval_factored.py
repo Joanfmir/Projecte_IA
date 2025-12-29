@@ -19,7 +19,6 @@ from core.dispatch_policy import (
     A_REPLAN_TRAFFIC,
 )
 from core.factored_q_agent import FactoredQAgent
-from core.factored_states import FactoredStateEncoder  # manteniendo compatibilidad de imports
 
 
 @dataclass
@@ -151,7 +150,7 @@ def run_episode_with_events(
         positive_sum = 0
         batching_tick = False
         for r in riders:
-            assigned = r.get("assigned", [])
+            assigned = set(r.get("assigned", []))
             load = len(assigned)
             carrying = r.get("carrying")
             if carrying is not None and carrying not in assigned:
@@ -461,11 +460,7 @@ def main():
     )
     args = parser.parse_args()
 
-    enable_road_closures = False
-    if args.closures:
-        enable_road_closures = True
-    elif args.no_closures:
-        enable_road_closures = False
+    enable_road_closures = args.closures and not args.no_closures
 
     base_seed = args.seed
     if base_seed is not None and base_seed < 0:

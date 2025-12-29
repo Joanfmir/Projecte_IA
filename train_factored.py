@@ -143,7 +143,7 @@ def train(
                     positive_sum = 0
                     batching_tick = False
                     for r in riders:
-                        assigned = r.get("assigned", [])
+                        assigned = set(r.get("assigned", []))
                         load = len(assigned)
                         carrying = r.get("carrying")
                         if carrying is not None and carrying not in assigned:
