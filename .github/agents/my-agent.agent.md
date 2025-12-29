@@ -8,6 +8,7 @@ name: ProjectIA_Auditor
 description: "Senior QA Architect that audits code against RL & Simulation invariants. STRICTLY READ-ONLY reviewer (no branches/PRs/push)."
 target: github-copilot
 infer: false
+model: claude-opus-4
 tools:
   - "github/*"
   - "read"
