@@ -22,6 +22,8 @@ from core.factored_q_agent import FactoredQAgent, FactoredQConfig
 
 FAST_EPISODES = 2
 FAST_MAX_TICKS = 200
+WORKER_SEED_STRIDE = 9973
+EVAL_SEED_OFFSET = 100_000
 
 
 @dataclass
@@ -34,7 +36,7 @@ class ParallelTrainConfig:
     episode_len: int
     max_steps_per_episode: int
     n_workers: int
-    epsilon_start: float
+    epsilon_start: float | None
     epsilon_end: float
     epsilon_decay_steps: int
     eval_every: int
@@ -105,7 +107,7 @@ def _epsilon_scheduler(
     def schedule(step_index: int) -> float:
         idx = min(max(step_index, 0), span)
         eps = epsilon_start - (epsilon_start - epsilon_end) * (idx / span)
-        return max(epsilon_end, min(epsilon_start, eps))
+        return eps
 
     return schedule
 
@@ -153,7 +155,7 @@ def _run_episode_worker(
     cfg.seed = base_seed + episode
     cfg.episode_len = max_steps
 
-    agent_seed = base_seed + episode * 9973
+    agent_seed = base_seed + episode * WORKER_SEED_STRIDE
     agent = _make_worker_agent(snapshot, epsilon, max_steps, agent_seed)
 
     sim = Simulator(cfg)
@@ -281,7 +283,7 @@ def _evaluate_greedy(
 
     for i in range(n_episodes):
         cfg = SimConfig(**base_cfg.__dict__)
-        cfg.seed = base_seed + 100_000 + i
+        cfg.seed = base_seed + EVAL_SEED_OFFSET + i
 
         sim = Simulator(cfg)
         total_r = 0.0
@@ -290,6 +292,7 @@ def _evaluate_greedy(
         load_positive_sum = 0
         load_positive_count = 0
         ticks_with_batching = 0
+        steps = 0
 
         snap = sim.snapshot()
         done = False
@@ -320,6 +323,7 @@ def _evaluate_greedy(
             if action == A_WAIT:
                 wait_count += 1
             action_count += 1
+            steps += 1
 
             reward, done = sim.step(action)
             total_r += reward
@@ -332,7 +336,7 @@ def _evaluate_greedy(
         avg_loads.append(
             load_positive_sum / load_positive_count if load_positive_count else 0.0
         )
-        batching_eff.append(ticks_with_batching / cfg.episode_len if cfg.episode_len else 0.0)
+        batching_eff.append(ticks_with_batching / max(1, steps))
 
     agent.epsilon = prev_eps
     return {
@@ -662,6 +666,10 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
         eps_start, cfg.epsilon_end, cfg.epsilon_decay_steps or n_episodes
     )
 
+    def epsilon_for_episode(ep_num: int) -> float:
+        """Epsilon al inicio del episodio (episodios 1-indexed)."""
+        return scheduler(max(ep_num - 1, 0))
+
     t0 = time.time()
     last_rewards: deque[float] = deque(maxlen=50)
     last_deltas: deque[float] = deque(maxlen=50)
@@ -717,7 +725,7 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
                             ep,
                             base_cfg.__dict__,
                             snapshot,
-                            scheduler(ep - 1),
+                            epsilon_for_episode(ep),
                             max_steps,
                             cfg.base_seed,
                         ),
@@ -737,8 +745,9 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
 
                     if expected in buffer:
                         result = buffer.pop(expected)
-                        epsilon_ep = scheduler(expected - 1)
+                        epsilon_ep = epsilon_for_episode(expected)
                         apply_stats = _apply_episode_to_agent(agent, result, epsilon_ep)
+                        agent.epsilon = scheduler(expected)
 
                         global_updates += len(result.transitions)
                         global_steps += result.steps
@@ -832,7 +841,7 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
 
     agent.save(q_path)
     print(f"\nEntrenamiento paralelo finalizado. Q-table: {q_path}")
-    print(f"Epsilon inicial={eps_start:.4f}, final={scheduler(n_episodes - 1):.4f}")
+    print(f"Epsilon inicial={eps_start:.4f}, final={scheduler(n_episodes):.4f}")
     print(
         f"Episodios={n_episodes}, updates={global_updates}, steps={global_steps}"
     )
