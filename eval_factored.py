@@ -9,7 +9,7 @@ import statistics
 import json
 import random
 from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from simulation.simulator import Simulator, SimConfig
 from core.dispatch_policy import (
@@ -18,7 +18,6 @@ from core.dispatch_policy import (
     A_WAIT,
     A_REPLAN_TRAFFIC,
 )
-from core.factored_states import FactoredStateEncoder
 from core.factored_q_agent import FactoredQAgent
 
 
@@ -33,19 +32,19 @@ class EvalConfig:
     width: int = 45
     height: int = 35
     n_riders: int = 6
-    order_spawn_prob: float = 0.35
+    order_spawn_prob: float = 0.40
     max_eta: int = 80
     block_size: int = 6
     street_width: int = 2
 
     # Eventos dinámicos
     # Tráfico ahora manejado internamente por simulator (enable_internal_traffic=True)
-    enable_road_closures: bool = True
+    enable_road_closures: bool = False
     road_closure_prob: float = 0.02  # probabilidad por tick de nuevo cierre
     max_closures: int = 5  # máximo de cierres activos
 
     # Reproducibilidad
-    base_seed: Optional[int] = None  # None = aleatorio
+    base_seed: Optional[int] = 7  # None = aleatorio
 
     # Paths
     q_path: str = "artifacts/qtable_factored.pkl"
@@ -83,6 +82,13 @@ class EpisodeMetrics:
     # Q-table usage (solo para agente)
     q1_used: int = 0
     q3_used: int = 0
+    ticks_total: int = 0
+    wait_count: int = 0
+    action_count: int = 0
+    wait_ratio: float = 0.0
+    avg_rider_load: float = 0.0
+    batching_efficiency: float = 0.0
+    activated_riders: int = 0
 
 
 def run_episode_with_events(
@@ -101,15 +107,23 @@ def run_episode_with_events(
     traffic_changes = 0
     road_closures_total = 0
     q_usage = {"Q1": 0, "Q3": 0, "none": 0}
+    wait_count = 0
+    action_count = 0
+    load_positive_sum = 0
+    load_positive_count = 0
+    ticks_with_batching = 0
+    activated_riders = set()
 
     # Tracking de tiempos de entrega
     delivery_times: List[int] = []
+
+    snapshot_fn = sim.snapshot
+    step_fn = sim.step
 
     done = False
     prev_traffic_zones = dict(getattr(sim, "traffic_zones", {}))
 
     while not done:
-        t = sim.t
 
         # === Eventos dinámicos ===
         # Tráfico manejado internamente por simulator.step() (enable_internal_traffic=True)
@@ -128,17 +142,44 @@ def run_episode_with_events(
                 road_closures_total += 1
 
         # === Política ===
-        snap = sim.snapshot()
+        snap = snapshot_fn()
+
+        # Métricas de batching
+        riders = snap.get("riders", [])
+        positive_loads = 0
+        positive_sum = 0
+        batching_tick = False
+        for r in riders:
+            assigned = r.get("assigned", [])
+            load = len(assigned)
+            carrying = r.get("carrying")
+            if carrying is not None and carrying not in assigned:
+                load += 1
+            if load > 0:
+                positive_loads += 1
+                positive_sum += load
+                activated_riders.add(r.get("id"))
+                if load >= 2:
+                    batching_tick = True
+        if positive_loads:
+            load_positive_sum += positive_sum
+            load_positive_count += positive_loads
+        if batching_tick:
+            ticks_with_batching += 1
+
         action, q_used = policy_fn(sim, snap)
 
         if track_q_usage and q_used:
             q_usage[q_used] += 1
+        action_count += 1
+        if action == A_WAIT:
+            wait_count += 1
 
         # === Step ===
         # Guardamos pedidos antes del step para detectar entregas
         pending_before = set(o.order_id for o in sim.om.get_pending_orders())
 
-        reward, done = sim.step(action)
+        reward, done = step_fn(action)
         total_r += reward
 
         # CRÍTICO: Actualizar prev_traffic_pressure para que delta_traffic funcione
@@ -200,6 +241,17 @@ def run_episode_with_events(
         road_closures_total=road_closures_total,
         q1_used=q_usage["Q1"],
         q3_used=q_usage["Q3"],
+        ticks_total=action_count,
+        wait_count=wait_count,
+        action_count=action_count,
+        wait_ratio=wait_count / action_count if action_count else 0.0,
+        avg_rider_load=(
+            load_positive_sum / load_positive_count if load_positive_count else 0.0
+        ),
+        batching_efficiency=(
+            ticks_with_batching / action_count if action_count else 0.0
+        ),
+        activated_riders=len(activated_riders),
     )
 
 
@@ -215,6 +267,7 @@ def make_heuristic_policy():
 def make_factored_policy(q_path: str, episode_len: int):
     """Política basada en agente factorizado entrenado."""
     agent = FactoredQAgent.load(q_path, episode_len=episode_len)
+    agent._eval_prev_epsilon = agent.epsilon
     agent.epsilon = 0.0  # Greedy en evaluación
 
     def policy(sim, snap):
@@ -259,7 +312,7 @@ def evaluate(cfg: EvalConfig):
         ep_seed = cfg.base_seed + i
 
         # Config del simulador
-        # Spawn interno ON (necesitamos pedidos), tráfico interno OFF (gestionado en run_episode_with_events)
+        # Spawn interno ON (necesitamos pedidos), tráfico interno ON (mismo régimen que train)
         sim_cfg = SimConfig(
             width=cfg.width,
             height=cfg.height,
@@ -280,6 +333,7 @@ def evaluate(cfg: EvalConfig):
             sim_h, heuristic_policy, cfg, track_q_usage=False
         )
         results_h.append(metrics_h)
+        del sim_h
 
         # Evaluar agente factorizado
         if has_trained:
@@ -289,6 +343,7 @@ def evaluate(cfg: EvalConfig):
                 sim_q, factored_policy, cfg, track_q_usage=True, agent=agent
             )
             results_q.append(metrics_q)
+            del sim_q
 
         print(
             f"Ep {i+1}/{cfg.n_episodes} [seed={ep_seed}] - H: {metrics_h.ontime_ratio:.2%} on-time",
@@ -349,6 +404,9 @@ def evaluate(cfg: EvalConfig):
         q_reward = sum(m.reward_total for m in results_q) / len(results_q)
         print(f"  Diferencia reward:  {q_reward - h_reward:+.1f}")
 
+        if hasattr(agent, "_eval_prev_epsilon"):
+            agent.epsilon = agent._eval_prev_epsilon
+
     # Guardar resultados
     output = {
         "config": asdict(cfg),
@@ -369,22 +427,50 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluación del agente factorizado")
     parser.add_argument("--episodes", type=int, default=20, help="Número de episodios")
     parser.add_argument(
-        "--seed", type=int, default=None, help="Seed base (None=aleatorio)"
+        "--seed",
+        type=int,
+        default=7,
+        help="Seed base (por defecto 7; usa -1 para aleatorio)",
     )
     parser.add_argument("--qpath", type=str, default="artifacts/qtable_factored.pkl")
     parser.add_argument(
         "--no-closures", action="store_true", help="Deshabilitar cierres de calles"
     )
+    parser.add_argument(
+        "--closures",
+        action="store_true",
+        help="Habilitar cierres de calles (por defecto OFF para replicar train)",
+    )
     parser.add_argument("--closure-prob", type=float, default=0.02)
+    parser.add_argument(
+        "--fast",
+        "--debug",
+        action="store_true",
+        help="Modo rápido: 2 episodios de 200 ticks para smoke test",
+    )
     args = parser.parse_args()
+
+    enable_road_closures = False
+    if args.closures:
+        enable_road_closures = True
+    elif args.no_closures:
+        enable_road_closures = False
+
+    base_seed = args.seed
+    if base_seed is not None and base_seed < 0:
+        base_seed = None
 
     cfg = EvalConfig(
         n_episodes=args.episodes,
-        base_seed=args.seed,
+        base_seed=base_seed,
         q_path=args.qpath,
-        enable_road_closures=not args.no_closures,
+        enable_road_closures=enable_road_closures,
         road_closure_prob=args.closure_prob,
     )
+
+    if args.fast:
+        cfg.n_episodes = min(cfg.n_episodes, 2)
+        cfg.episode_len = min(cfg.episode_len, 200)
 
     evaluate(cfg)
 
