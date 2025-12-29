@@ -10,6 +10,29 @@ from matplotlib.collections import LineCollection
 from core.dispatch_policy import A_ASSIGN_ANY_NEAREST
 
 
+def ticks_to_time(t: int, episode_len: int) -> str:
+    """
+    Convierte ticks de simulación a formato hora HH:MM.
+    Empieza a las 19:00 y termina a las 00:00 (5 horas = 300 minutos).
+    """
+    total_minutes = 300  # 5 horas (19:00 a 00:00)
+    minutes_elapsed = (t / episode_len) * total_minutes
+    
+    start_hour = 19
+    start_minutes = start_hour * 60  # 19:00 = 1140 minutos desde medianoche
+    
+    current_minutes = start_minutes + minutes_elapsed
+    
+    # Si pasa de medianoche (1440 minutos)
+    if current_minutes >= 1440:
+        current_minutes -= 1440
+    
+    hours = int(current_minutes // 60)
+    mins = int(current_minutes % 60)
+    
+    return f"{hours:02d}:{mins:02d}"
+
+
 class Visualizer:
     """
     Visualizer optimizado + robusto:
@@ -32,6 +55,7 @@ class Visualizer:
         self.interval_ms = interval_ms
         self.stats_every = max(1, int(stats_every))
         self.route_draw_limit = max(5, int(route_draw_limit))
+        self.episode_len = sim.cfg.episode_len
 
         snap = self.sim.snapshot()
         self.W = snap["width"]
@@ -42,6 +66,16 @@ class Visualizer:
         # FIG / AX principal
         self.fig, self.ax = plt.subplots()
         self.fig.subplots_adjust(top=0.88, right=0.78)
+        
+        # Pantalla completa
+        mng = plt.get_current_fig_manager()
+        try:
+            mng.window.state('zoomed')  # Windows
+        except:
+            try:
+                mng.full_screen_toggle()  # Alternativa
+            except:
+                pass
 
         self.ax.set_xlim(-0.5, self.W - 0.5)
         self.ax.set_ylim(-0.5, self.H - 0.5)
@@ -101,9 +135,21 @@ class Visualizer:
             family="monospace"
         )
 
+        # Panel "App del Rider" a la derecha (más arriba)
+        self.ax_rider_app = self.fig.add_axes([0.82, 0.15, 0.17, 0.45])
+        self.ax_rider_app.axis("off")
+        self.ax_rider_app.set_title("App Riders", fontsize=11, fontweight="bold")
+        self.rider_app_text = self.ax_rider_app.text(
+            0.0, 1.0, "",
+            va="top", ha="left",
+            fontsize=8,
+            family="monospace"
+        )
+
         # init
         self._update_zone_legend(snap)
         self._update_stats_panel(snap)
+        self._update_rider_app(snap)
         self._last_stats_t = -10**9
 
     # -------------------------
@@ -114,6 +160,22 @@ class Visualizer:
             rect = Rectangle((x - 0.5, y - 0.5), 1, 1, linewidth=0,
                              facecolor="#273043", alpha=0.35)
             self.ax.add_patch(rect)
+
+    def _draw_road_closures(self, blocked_nodes):
+        """Dibuja los cierres de calle como cuadrados naranjas (obras)."""
+        # Limpiar cierres anteriores
+        if hasattr(self, '_closure_patches'):
+            for p in self._closure_patches:
+                p.remove()
+        self._closure_patches = []
+        
+        for node in blocked_nodes:
+            if isinstance(node, (list, tuple)) and len(node) == 2:
+                x, y = node
+                rect = Rectangle((x - 0.5, y - 0.5), 1, 1, linewidth=1,
+                                 facecolor="#e74c3c", edgecolor="#c0392b", alpha=0.7)
+                self.ax.add_patch(rect)
+                self._closure_patches.append(rect)
 
     def _draw_avenues(self):
         W, H = self.W, self.H
@@ -139,9 +201,10 @@ class Visualizer:
                    markerfacecolor="#2ca02c", markeredgecolor="none", label="Pedido (normal)"),
             Line2D([0], [0], marker="o", linestyle="None", markersize=10,
                    markerfacecolor="#d62728", markeredgecolor="none", label="Pedido (urgente)"),
-            Line2D([0], [0], marker="^", linestyle="None", markersize=10,
-                   markerfacecolor="#1f77b4", markeredgecolor="none", label="Repartidor"),
-            Line2D([0], [0], linewidth=2, color="#1f77b4", label="Ruta"),
+            Line2D([0], [0], marker="D", linestyle="None", markersize=10,
+                   markerfacecolor="#1f77b4", markeredgecolor="white", label="Repartidor"),
+            Line2D([0], [0], linewidth=2, color="#1f77b4", linestyle="--", label="Ruta (entregando)"),
+            Line2D([0], [0], linewidth=2, color="#e74c3c", linestyle="--", label="Ruta (volviendo)"),
             Line2D([0], [0], linewidth=3, color="#d62728", label="Calle cortada"),
             Rectangle((0, 0), 1, 1, facecolor="#273043", alpha=0.35, label="Edificio / manzana"),
         ]
@@ -240,17 +303,16 @@ class Visualizer:
         riders = snap.get("riders", [])
         orders_full = snap.get("orders_full", [])
 
+        time_str = ticks_to_time(t, self.episode_len)
         lines = []
-        lines.append(f"t={t}")
+        lines.append(f"Hora: {time_str}")
         lines.append("")
         lines.append("RIDERS")
         lines.append("------")
 
         for r in riders:
-            rid = r["id"]
+            name = r.get("name", f"R{r['id']}")
             x, y = r["pos"]
-            fat = r.get("fatigue", 0.0)
-            rew = r.get("reward", 0.0)
 
             avail = r.get("available", True)
             route_len = len(r.get("route", []))
@@ -264,7 +326,7 @@ class Visualizer:
                 carry_txt = str(carrying)
 
             lines.append(
-                f"R{rid:02d} pos=({x:2d},{y:2d}) fat={fat:4.2f} av={int(avail)} carry={carry_txt:<5} route={route_len:3d}"
+                f"{name:6s} pos=({x:2d},{y:2d}) av={int(avail)} carry={carry_txt:<5} route={route_len:3d}"
             )
 
         lines.append("")
@@ -298,16 +360,89 @@ class Visualizer:
 
         self.stats_text.set_text("\n".join(lines))
 
+    def _update_rider_app(self, snap: dict):
+        """Muestra la 'app' de cada rider con sus pedidos asignados."""
+        t = snap["t"]
+        riders = snap.get("riders", [])
+        orders_full = snap.get("orders_full", [])
+        restaurant = snap.get("restaurant", (0, 0))
+        
+        # Crear diccionario de pedidos por ID para búsqueda rápida
+        orders_by_id = {o["id"]: o for o in orders_full}
+        
+        lines = []
+        for r in riders:
+            name = r.get("name", f"R{r['id']}")
+            pos = tuple(r["pos"])
+            carrying = r.get("carrying", None)  # ID del pedido que lleva actualmente
+            assigned_ids = r.get("assigned", [])  # Campo correcto del snapshot
+            resting = r.get("resting", False)
+            picked = r.get("picked", False)  # Si ya recogió los pedidos
+            
+            lines.append(f"+------------------+")
+            lines.append(f"|  {name:^14s}  |")
+            lines.append(f"+------------------+")
+            
+            if resting:
+                lines.append(f"| [ZZZ] Descansando |")
+                lines.append(f"+------------------+")
+                lines.append("")
+                continue
+            
+            if not assigned_ids:
+                lines.append(f"| [OK] Sin pedidos  |")
+                lines.append(f"|    Esperando...   |")
+                lines.append(f"+------------------+")
+                lines.append("")
+                continue
+            
+            # Mostrar hacia dónde va
+            if picked and not assigned_ids:
+                lines.append(f"| >> Volviendo      |")
+            elif not picked:
+                lines.append(f"| >> Recogiendo...  |")
+            else:
+                lines.append(f"| >> Entregando     |")
+            
+            for oid in assigned_ids:
+                o = orders_by_id.get(oid)
+                if o is None:
+                    continue
+                    
+                dropoff = o.get("dropoff", (0, 0))
+                priority = o.get("priority", 1)
+                deadline = o.get("deadline", 0)
+                status = o.get("status", "pending")
+                
+                tiempo_rest = deadline - t
+                prio_txt = "[!]" if priority > 1 else "   "
+                
+                # Indicar si es el pedido actual
+                current = ">>" if carrying == oid else "  "
+                
+                lines.append(f"|{current}{prio_txt} Pedido {oid:<3}   |")
+                lines.append(f"|    Dest: ({dropoff[0]:2},{dropoff[1]:2})   |")
+                if tiempo_rest > 0:
+                    lines.append(f"|    Tiempo: {tiempo_rest:3}t    |")
+                else:
+                    lines.append(f"|    !! TARDE !!    |")
+                lines.append(f"+------------------+")
+            
+            lines.append("")
+        
+        self.rider_app_text.set_text("\n".join(lines))
+
     # -------------------------
     # Dinámica
     # -------------------------
     def _ensure_riders(self, n: int):
         while len(self.rider_scatters) < n:
-            sc = self.ax.scatter([], [], s=170, marker="^", color="#1f77b4")
+            # Marcador de diamante para representar la moto
+            sc = self.ax.scatter([], [], s=120, marker="D", color="#1f77b4", edgecolors="white", linewidths=1.2, zorder=10)
             self.rider_scatters.append(sc)
-            (ln,) = self.ax.plot([], [], linewidth=2, color="#1f77b4")
+            (ln,) = self.ax.plot([], [], linewidth=2, color="#1f77b4", linestyle="--")
             self.route_lines.append(ln)
-            txt = self.ax.text(0, 0, "", fontsize=9, ha="left", va="bottom")
+            txt = self.ax.text(0, 0, "", fontsize=8, ha="left", va="bottom", fontweight="bold")
             self.rider_labels.append(txt)
 
     def _safe_offsets(self, pts):
@@ -336,8 +471,9 @@ class Visualizer:
         closures = snap.get("closures", 0)
         blocked = snap.get("blocked", 0)
 
+        time_str = ticks_to_time(t, self.episode_len)
         self.hud.set_text(
-            f"t={t}   pending={len(orders)}   riders={len(riders)}   traffic={traffic}   closures={closures}   blocked={blocked}"
+            f"🕐 {time_str}   pending={len(orders)}   riders={len(riders)}   traffic={traffic}   closures={closures}   blocked={blocked}"
         )
 
         # restaurante
@@ -351,10 +487,9 @@ class Visualizer:
         self.orders_normal.set_offsets(self._safe_offsets(normal_pts))
         self.orders_urgent.set_offsets(self._safe_offsets(urgent_pts))
 
-        # cierres
-        closed = snap.get("closed_edges", [])
-        segs = [[u, v] for (u, v) in closed]
-        self.closed_lc.set_segments(segs)
+        # cierres dinámicos (como cuadrados naranjas = obras)
+        blocked_nodes = snap.get("blocked_nodes", [])
+        self._draw_road_closures(blocked_nodes)
 
         # zonas
         self._update_zone_legend(snap)
@@ -363,21 +498,43 @@ class Visualizer:
         self._ensure_riders(len(riders))
         for i, r in enumerate(riders):
             x, y = r["pos"]
+            # Actualizar posición del rider
             self.rider_scatters[i].set_offsets([[x, y]])
 
+            name = r.get("name", f"R{r['id']}")
             carrying = r.get("carrying", None)
             if carrying is None:
-                lab = f"R{r['id']}"
+                lab = name
             elif isinstance(carrying, list):
-                lab = f"R{r['id']}→{','.join(map(str, carrying))}"
+                lab = f"{name}>{','.join(map(str, carrying))}"
             else:
-                lab = f"R{r['id']}→{carrying}"
+                lab = f"{name}>{carrying}"
 
-            self.rider_labels[i].set_position((x + 0.12, y + 0.12))
+            self.rider_labels[i].set_position((x + 0.25, y + 0.25))
             self.rider_labels[i].set_text(lab)
 
             route = r.get("route", [])[: self.route_draw_limit]
             path = [r["pos"]] + route
+            
+            # Determinar color: azul si va a entregar, rojo si vuelve al restaurante
+            picked = r.get("picked", False)
+            has_orders = len(r.get("assigned", [])) > 0
+            
+            if picked and not has_orders:
+                # Volviendo al restaurante (ya entregó todo)
+                route_color = "#e74c3c"  # Rojo
+            elif not picked and has_orders:
+                # Yendo a recoger
+                route_color = "#1f77b4"  # Azul
+            elif picked and has_orders:
+                # Entregando pedidos
+                route_color = "#1f77b4"  # Azul
+            else:
+                # Sin pedidos, disponible
+                route_color = "#1f77b4"  # Azul
+            
+            self.route_lines[i].set_color(route_color)
+            
             if len(path) >= 2:
                 xs = [p[0] for p in path]
                 ys = [p[1] for p in path]
@@ -389,6 +546,9 @@ class Visualizer:
         if (t - self._last_stats_t) >= self.stats_every:
             self._update_stats_panel(snap)
             self._last_stats_t = t
+
+        # App del rider se actualiza cada frame para que sea responsive
+        self._update_rider_app(snap)
 
         if done:
             plt.close(self.fig)

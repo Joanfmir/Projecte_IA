@@ -38,7 +38,18 @@ class Order:
 class OrderManager:
     def __init__(self):
         self.orders: List[Order] = []
+        self.cancelled_orders: List[Order] = []  # Pedidos cancelados por bloqueo
         self._next_id = 1
+    def cancel_order(self, order_id: int, reason: str = "bloqueo_calle") -> None:
+        o = self.get_order(order_id)
+        if o is None:
+            return
+        # Solo cancelar si no está entregado
+        if o.delivered_at is None:
+            o.cancelled_reason = reason
+            self.cancelled_orders.append(o)
+            # Marcar como entregado para que salga de pendientes
+            o.delivered_at = -1  # Valor especial: -1 = cancelado
 
     def create_order(
         self,
