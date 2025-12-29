@@ -23,6 +23,9 @@ class EdgeInfo:
 
 
 class RoadGraph:
+    
+    # Número de zonas bloqueadas activas
+    # (debe inicializarse en __init__)
     """
     Grid graph con obstáculos (blocked=edificios) y movimientos 8-direcciones (diagonales).
     - Si una celda está en blocked: NO se puede pisar.
@@ -42,6 +45,8 @@ class RoadGraph:
         self.rng = random.Random(seed)
 
         self.blocked: Set[Node] = set(blocked) if blocked else set()
+
+        self.active_zones: int = 0  # Número de zonas bloqueadas activas
 
         # nodos transitables
         self.nodes: Set[Node] = {
@@ -152,22 +157,26 @@ class RoadGraph:
         Crea zonas bloqueadas que tienen sentido:
         - Obras: rectángulo 2x3 o 3x2 junto a un edificio
         - Accidente: línea de 3-4 casillas en una calle
+        Limita a 4 zonas activas.
         """
         for _ in range(n_closures):
-            # Elegir tipo de incidente
+            if self.active_zones >= 4:
+                break
             incident_type = self.rng.choice(["obras", "accidente"])
-            
+            created = False
             if incident_type == "obras":
-                self._create_construction_zone()
+                created = self._create_construction_zone()
             else:
-                self._create_accident_zone()
+                created = self._create_accident_zone()
+            if created:
+                self.active_zones += 1
 
-    def _create_construction_zone(self) -> None:
+    def _create_construction_zone(self) -> bool:
         """Crea una zona de obras rectangular junto a un edificio."""
         # Buscar una esquina de edificio
         corner = self._find_building_corner()
         if corner is None:
-            return
+            return False
         
         x, y = corner
         
@@ -176,38 +185,34 @@ class RoadGraph:
         self.rng.shuffle(sizes)
         
         for width, height in sizes:
-            # Probar las 4 direcciones desde la esquina
             offsets = [(0, 0), (-width+1, 0), (0, -height+1), (-width+1, -height+1)]
             self.rng.shuffle(offsets)
-            
             for ox, oy in offsets:
                 nodes_to_block = []
                 valid = True
-                
                 for dx in range(width):
                     for dy in range(height):
                         node = (x + ox + dx, y + oy + dy)
                         if node not in self.nodes:
                             valid = False
                             break
-                        # Verificar que no bloquee un pasillo único
                         if not self._can_safely_block(node):
                             valid = False
                             break
                         nodes_to_block.append(node)
                     if not valid:
                         break
-                
                 if valid and len(nodes_to_block) >= 3:
                     for node in nodes_to_block:
                         self._block_node(node)
-                    return
+                    return True
+        return False
 
-    def _create_accident_zone(self) -> None:
+    def _create_accident_zone(self) -> bool:
         """Crea una banda de bloqueo en una calle (accidente/avería), más ancha."""
         start = self._find_street_node()
         if start is None:
-            return
+            return False
 
         # Elegir dirección (horizontal o vertical)
         directions = [(1, 0), (0, 1)]
@@ -219,23 +224,22 @@ class RoadGraph:
             length = self.rng.randint(3, 5)
             width = self.rng.choice([2, 3])  # ancho de la banda
             for _ in range(length):
-                # Para cada posición en la banda, bloquear celdas adyacentes
                 for w in range(-width//2, width//2 + 1):
-                    if dx == 1:  # horizontal
+                    if dx == 1:
                         node = (current[0], current[1] + w)
-                    else:       # vertical
+                    else:
                         node = (current[0] + w, current[1])
                     if node in self.nodes and self._can_safely_block(node):
                         nodes_to_block.append(node)
                 current = (current[0] + dx, current[1] + dy)
                 if current not in self.nodes:
                     break
-            # Filtrar duplicados
             nodes_to_block = list(set(nodes_to_block))
             if len(nodes_to_block) >= 6:
                 for node in nodes_to_block:
                     self._block_node(node)
-                return
+                return True
+        return False
 
     def _find_building_corner(self) -> Optional[Node]:
         """Encuentra un nodo que esté en una esquina de edificio."""

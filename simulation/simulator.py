@@ -24,7 +24,7 @@ class SimConfig:
     width: int = 25
     height: int = 25
     n_riders: int = 4
-    episode_len: int = 300
+    episode_len: int = 50
     order_spawn_prob: float = 0.15
     max_eta: int = 70
     seed: int = 7
@@ -477,10 +477,6 @@ class Simulator:
 
     def maybe_road_closure(self) -> None:
         """Genera cierres de calles aleatorios según road_closure_prob, pero nunca más de 4 activos."""
-        # Contar bloqueos activos (solo dinámicos, no edificios)
-        active_closures = len(self.graph.blocked - self.buildings)
-        if active_closures >= 4:
-            return  # No generar más cierres
         if self.rng.random() < self.cfg.road_closure_prob:
             self.graph.random_road_incidents(self.cfg.road_closures_per_event)
             # Replanificar rutas de riders afectados
