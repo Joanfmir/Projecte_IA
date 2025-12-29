@@ -56,6 +56,7 @@ class FactoredQAgent:
     # Para tracking
     last_q_used: str = field(default="none", init=False)
     max_delta_q: float = field(default=0.0, init=False)
+    last_action: Optional[int] = field(default=None, init=False)
 
     def __post_init__(self):
         self.epsilon = self.cfg.eps_start
@@ -77,7 +78,8 @@ class FactoredQAgent:
         q_values = [(a, self.get_q(q_table, state, a)) for a in actions]
         max_q = max(v for _, v in q_values)
         best_actions = [a for a, v in q_values if v == max_q]
-        return self.rng.choice(best_actions)
+        # Deterministic tie-break by action id
+        return sorted(best_actions)[0]
 
     # ─────────────────────────────────────────────────────────────
     # Action Masking - acciones válidas por tabla
@@ -126,14 +128,19 @@ class FactoredQAgent:
 
         # PRIORIDAD 1: Siempre asignar si hay trabajo
         if has_work:
-            return self._choose_from_q1(encoded["s_assign"], features, training)
+            action = self._choose_from_q1(encoded["s_assign"], features, training)
+            self.last_action = action
+            return action
 
         # PRIORIDAD 2: Replanificar solo si cambió tráfico Y hay riders activos
         if traffic_changed and has_riders_in_route:
-            return self._choose_from_q3(encoded["s_incident"], features, training)
+            action = self._choose_from_q3(encoded["s_incident"], features, training)
+            self.last_action = action
+            return action
 
         # Sin trabajo, esperar
         self.last_q_used = "none"
+        self.last_action = A_WAIT
         return A_WAIT
 
     def _choose_from_q1(self, state: Tuple, features: Dict, training: bool) -> int:
@@ -141,16 +148,22 @@ class FactoredQAgent:
         self.last_q_used = "Q1"
         valid = self._valid_actions_q1(features)
         if training and self.rng.random() < self.epsilon:
-            return self.rng.choice(valid)
-        return self.best_action(self.Q1, state, valid)
+            action = self.rng.choice(valid)
+        else:
+            action = self.best_action(self.Q1, state, valid)
+        self.last_action = action
+        return action
 
     def _choose_from_q3(self, state: Tuple, features: Dict, training: bool) -> int:
         """Elige acción desde Q₃ (Incidente) con action masking."""
         self.last_q_used = "Q3"
         valid = self._valid_actions_q3(features)
         if training and self.rng.random() < self.epsilon:
-            return self.rng.choice(valid)
-        return self.best_action(self.Q3, state, valid)
+            action = self.rng.choice(valid)
+        else:
+            action = self.best_action(self.Q3, state, valid)
+        self.last_action = action
+        return action
 
     # ─────────────────────────────────────────────────────────────
     # Update (Q-Learning con Unified Value Estimation + Masking)
@@ -196,11 +209,38 @@ class FactoredQAgent:
         Actualiza la Q-table correspondiente usando Unified Value Estimation.
         Target = reward + gamma * get_max_q_for_next_state(snap_next)
         """
-        if self.last_q_used == "none":
-            return  # No actualizamos si no se usó ninguna tabla
-
         # Codificar estado actual
         encoded = self.encoder.encode_all(snap, update_prev=False)
+        features = encoded["features"]
+
+        table_to_use = self.last_q_used
+        state = None
+        q_table = None
+
+        if table_to_use == "none":
+            # Inferir tabla aplicable (permite aprender con WAIT)
+            has_work = features["pending_unassigned"] > 0
+            has_riders_in_route = features["busy_riders"] > 0
+            traffic_changed = self.encoder.should_use_q3(features)
+
+            if has_work:
+                table_to_use = "Q1"
+                state = encoded["s_assign"]
+                q_table = self.Q1
+            elif traffic_changed and has_riders_in_route:
+                table_to_use = "Q3"
+                state = encoded["s_incident"]
+                q_table = self.Q3
+        else:
+            if table_to_use == "Q1":
+                state = encoded["s_assign"]
+                q_table = self.Q1
+            elif table_to_use == "Q3":
+                state = encoded["s_incident"]
+                q_table = self.Q3
+
+        if state is None or q_table is None:
+            return
 
         # Calcular target con Unified Value Estimation
         if done:
@@ -209,13 +249,8 @@ class FactoredQAgent:
             max_q_next = self.get_max_q_for_next_state(snap_next)
             target = reward + self.cfg.gamma * max_q_next
 
-        # Actualizar la tabla que se usó en este tick
-        if self.last_q_used == "Q1":
-            state = encoded["s_assign"]
-            self._unified_update(self.Q1, state, action, target)
-        elif self.last_q_used == "Q3":
-            state = encoded["s_incident"]
-            self._unified_update(self.Q3, state, action, target)
+        self.last_q_used = table_to_use
+        self._unified_update(q_table, state, action, target)
 
     def _unified_update(
         self, q_table: Dict, state: Tuple, action: int, target: float

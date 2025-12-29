@@ -6,6 +6,7 @@ Codificación de estados para Q-Learning factorizado.
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
+from core.route_planner import RoutePlanner
 
 Node = Tuple[int, int]
 
@@ -67,6 +68,21 @@ def bin_free_riders(n: int) -> int:
 def bin_min_slack(slack: int) -> int:
     """Tiempo mínimo hasta deadline: ≤0, 1-4, 5-8, 9-15, 16+ → 0-4."""
     if slack <= 0:
+        return 0
+    if slack <= 4:
+        return 1
+    if slack <= 8:
+        return 2
+    if slack <= 15:
+        return 3
+    return 4
+
+
+def bin_min_slack_with_sentinel(slack: int) -> int:
+    """Min slack con bin reservado para 'sin pedidos' (valor muy alto)."""
+    if slack >= 300:
+        return 5  # sentinel alto (sin pedidos sin asignar)
+    if slack == 0:
         return 0
     if slack <= 4:
         return 1
@@ -163,6 +179,20 @@ def bin_riders_at_restaurant(n: int) -> int:
     return 2
 
 
+def bin_capacity_mix(partial: int, full: int) -> int:
+    """
+    Mezcla de carga por flota:
+    0: todos vacíos
+    1: hay parciales, sin full
+    2: hay full (3+ activos)
+    """
+    if full > 0:
+        return 2
+    if partial > 0:
+        return 1
+    return 0
+
+
 def bin_min_rider_distance(dist: float) -> int:
     """Distancia mínima rider elegible -> pedido más cercano: 0-3, 4-8, 9-15, 16+ → 0-3."""
     if dist <= 3:
@@ -172,6 +202,19 @@ def bin_min_rider_distance(dist: float) -> int:
     if dist <= 15:
         return 2
     return 3
+
+
+def bin_distance_with_sentinel(dist: float) -> int:
+    """Distancia/ETA con bin reservado para sentinel (<0)."""
+    if dist < 0:
+        return 0
+    if dist <= 3:
+        return 1
+    if dist <= 8:
+        return 2
+    if dist <= 15:
+        return 3
+    return 4
 
 
 # ─────────────────────────────────────────────────────────────
@@ -199,46 +242,100 @@ def extract_features(
     restaurant = snap.get("restaurant", (0, 0))
 
     # Pedidos
-    pending_orders = snap.get("pending_orders", [])
-    # pending_orders es lista de (dropoff, priority, deadline, assigned_to)
+    orders_full = snap.get("orders_full", [])
+    pending_details: List[Dict] = []
+    if orders_full:
+        for od in orders_full:
+            if od.get("delivered_at") is not None:
+                continue
+            pending_details.append(
+                {
+                    "id": od.get("id"),
+                    "dropoff": tuple(od.get("dropoff", (0, 0))),
+                    "priority": od.get("priority", 1),
+                    "deadline": od.get("deadline", 0),
+                    "assigned_to": od.get("assigned_to"),
+                }
+            )
+    else:
+        pending_orders = snap.get("pending_orders", [])
+        for idx, item in enumerate(pending_orders):
+            if not isinstance(item, (list, tuple)) or len(item) < 4:
+                continue
+            dropoff, priority, deadline, assigned = item[:4]
+            oid = item[4] if len(item) > 4 else idx
+            pending_details.append(
+                {
+                    "id": oid,
+                    "dropoff": tuple(dropoff),
+                    "priority": priority,
+                    "deadline": deadline,
+                    "assigned_to": assigned,
+                }
+            )
 
-    unassigned = [o for o in pending_orders if o[3] is None]
-    pending_total = len(pending_orders)
+    unassigned = [o for o in pending_details if o["assigned_to"] is None]
+    pending_total = len(pending_details)
     pending_unassigned = len(unassigned)
 
     # Urgentes (priority > 1 O deadline - t <= 8)
     urgent_unassigned = sum(
         1
-        for (_, priority, deadline, assigned) in unassigned
-        if priority > 1 or (deadline - t) <= 8
+        for o in unassigned
+        if o["priority"] > 1 or (o["deadline"] - t) <= 8
     )
 
     urgent_total = sum(
         1
-        for (_, priority, deadline, _) in pending_orders
-        if priority > 1 or (deadline - t) <= 8
+        for o in pending_details
+        if o["priority"] > 1 or (o["deadline"] - t) <= 8
     )
 
     # Min slack (tiempo mínimo hasta deadline de pedidos sin asignar)
     if unassigned:
-        min_slack = min((deadline - t) for (_, _, deadline, _) in unassigned)
+        min_slack = min((o["deadline"] - t) for o in unassigned)
     else:
-        min_slack = 999  # No hay pedidos sin asignar
+        min_slack = 999  # Sentinel alto: no hay pedidos sin asignar
 
     # Riders
     riders = snap.get("riders", [])
     restaurant = snap.get("restaurant", (0, 0))
 
+    def active_count(r: Dict) -> int:
+        return len(r.get("assigned", []))
+
     # F3 FIX: Elegibles ALINEADO con AssignmentEngine._eligible_riders()
     # Criterios: can_take_more, NOT resting, (available OR at_restaurant)
     def is_eligible(r):
-        has_capacity = len(r.get("assigned", [])) < 2
+        assigned_len = active_count(r)
+        capacity = r.get("capacity", 3)
+        has_capacity = assigned_len < capacity
         resting = r.get("resting", False)
         available = r.get("available", False)
         at_restaurant = tuple(r.get("pos", (0, 0))) == tuple(restaurant)
         return has_capacity and (not resting) and (available or at_restaurant)
 
-    free_riders = sum(1 for r in riders if is_eligible(r))
+    free_riders = 0
+    empty_riders = 0
+    partial_riders = 0  # 1 o 2 pedidos activos
+    full_riders = 0  # 3 pedidos activos
+    partial_pool: List[Dict] = []
+
+    for r in riders:
+        count = active_count(r)
+        capacity_r = r.get("capacity", 3)
+        resting = r.get("resting", False)
+        if count == 0:
+            empty_riders += 1
+        elif count < capacity_r:
+            partial_riders += 1
+            if not resting:
+                partial_pool.append(r)
+        else:
+            full_riders += 1
+
+        if is_eligible(r):
+            free_riders += 1
 
     # En restaurante
     riders_at_restaurant = sum(
@@ -266,26 +363,40 @@ def extract_features(
         std_assigned = 0
 
     # NUEVO: Distancia mínima rider elegible -> pedido sin asignar (octile)
-    min_rider_to_order = 999.0
-    restaurant = snap.get("restaurant", (0, 0))
+    min_rider_to_order = -1.0
     for o_data in unassigned:
-        # o_data = (dropoff, priority, deadline, assigned_to)
-        ox, oy = o_data[0]  # dropoff position
+        ox, oy = o_data["dropoff"]
         for r in riders:
             if is_eligible(r):
                 rx, ry = r.get("pos", (0, 0))
                 # Distancia octile: rider -> restaurant -> dropoff
-                # Si rider está en restaurante, solo distancia a dropoff
                 if (rx, ry) == tuple(restaurant):
-                    dx, dy = abs(rx - ox), abs(ry - oy)
+                    dist = RoutePlanner.heuristic((rx, ry), (ox, oy))
                 else:
-                    # rider -> restaurant + restaurant -> dropoff
-                    d1x, d1y = abs(rx - restaurant[0]), abs(ry - restaurant[1])
-                    d2x, d2y = abs(restaurant[0] - ox), abs(restaurant[1] - oy)
-                    dx = d1x + d2x
-                    dy = d1y + d2y
-                octile = max(dx, dy) + 0.414 * min(dx, dy)
-                min_rider_to_order = min(min_rider_to_order, octile)
+                    dist = RoutePlanner.heuristic((rx, ry), tuple(restaurant)) + RoutePlanner.heuristic(
+                        tuple(restaurant), (ox, oy)
+                    )
+                min_rider_to_order = dist if min_rider_to_order < 0 else min(
+                    min_rider_to_order, dist
+                )
+
+    # Pedido candidato (mínimo slack, tie-break por id)
+    candidate_order: Optional[Dict] = None
+    if unassigned:
+        candidate_order = min(
+            unassigned, key=lambda o: (o["deadline"] - t, o["id"])
+        )
+    closest_partial_eta = -1.0
+    if candidate_order and partial_pool:
+        drop = candidate_order["dropoff"]
+        for r in partial_pool:
+            rx, ry = r.get("pos", (0, 0))
+            if (rx, ry) != tuple(restaurant):
+                continue
+            eta = RoutePlanner.heuristic(tuple(restaurant), drop)
+            closest_partial_eta = eta if closest_partial_eta < 0 else min(
+                closest_partial_eta, eta
+            )
 
     # Tráfico por zonas - NORMALIZADO
     traffic_zones = snap.get("traffic_zones", {})
@@ -318,7 +429,11 @@ def extract_features(
         "urgent_total": urgent_total,
         "urgent_ratio": urgent_ratio,
         "min_slack": min_slack,
+        "candidate_slack": (candidate_order["deadline"] - t)
+        if candidate_order
+        else -1,
         "free_riders": free_riders,
+        "capacity_mix": bin_capacity_mix(partial_riders, full_riders),
         "riders_at_restaurant": riders_at_restaurant,
         "busy_riders": busy_riders,
         "avg_fatigue": avg_fatigue,
@@ -327,6 +442,7 @@ def extract_features(
         "traffic_pressure": current_pressure,
         "delta_traffic": delta_traffic,
         "min_rider_to_order": min_rider_to_order,  # NUEVO
+        "closest_partial_eta": closest_partial_eta,
     }
 
 
@@ -387,16 +503,17 @@ class FactoredStateEncoder:
         if update_prev:
             self.prev_traffic_pressure = features["traffic_pressure"]
 
-        # Q₁: Estado de Asignación (8 dims - AÑADIDO distancia)
+        # Q₁: Estado de Asignación (capacidad granular + batching)
         s_assign = (
             bin_time(features["t"], features["episode_len"]),
             bin_pending_unassigned(features["pending_unassigned"]),
             bin_urgent(features["urgent_unassigned"]),
             bin_free_riders(features["free_riders"]),
-            bin_min_slack(features["min_slack"]),
-            bin_zones_congested(features["zones_congested"]),
+            bin_min_slack_with_sentinel(features["min_slack"]),
             bin_riders_at_restaurant(features["riders_at_restaurant"]),
-            bin_min_rider_distance(features["min_rider_to_order"]),  # NUEVO
+            bin_distance_with_sentinel(features["min_rider_to_order"]),
+            features["capacity_mix"],
+            bin_distance_with_sentinel(features["closest_partial_eta"]),
         )
 
         # Q₃: Estado de Incidente (4 dims)
@@ -432,8 +549,8 @@ class FactoredStateEncoder:
 
 def state_space_sizes() -> Dict[str, int]:
     """Retorna el tamaño de cada espacio de estados (Q1 y Q3 solamente)."""
-    # Q₁: 5 * 5 * 4 * 4 * 5 * 4 * 3 * 4 = 96,000 (añadido bin_min_rider_distance x4)
-    q1_size = 5 * 5 * 4 * 4 * 5 * 4 * 3 * 4
+    # Q₁: 5 * 5 * 4 * 4 * 6 * 3 * 5 * 3 * 5 = 540,000
+    q1_size = 5 * 5 * 4 * 4 * 6 * 3 * 5 * 3 * 5
 
     # Q₃: 4 * 4 * 4 * 5 = 320
     q3_size = 4 * 4 * 4 * 5

@@ -18,8 +18,8 @@ class Rider:
     distance_travelled: float = 0.0
     deliveries_done: int = 0
 
-    # --- Fase 2: 2 pedidos a la vez ---
-    capacity: int = 2
+    # --- Capacidad máxima de pedidos activos ---
+    capacity: int = 3
     assigned_order_ids: List[int] = field(default_factory=list)
 
     # Plan / navegación

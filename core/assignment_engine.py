@@ -1,6 +1,7 @@
 # core/assignment_engine.py
 from __future__ import annotations
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+import itertools
 
 from core.route_planner import RoutePlanner
 from core.order_manager import Order
@@ -10,9 +11,15 @@ Node = tuple[int, int]
 
 
 class AssignmentEngine:
-    def __init__(self, planner: RoutePlanner, restaurant_pos: Node):
+    def __init__(
+        self, planner: RoutePlanner, restaurant_pos: Node, activation_cost: float = 2.0
+    ):
         self.planner = planner
         self.restaurant_pos = restaurant_pos
+        # Hiperparámetros de batching
+        self.max_insertion_delta: float = 25.0
+        self.slack_tolerance: float = 3.0
+        self.activation_cost: float = activation_cost
 
     # -----------------------
     # Distancia Octile (O(1) - precisa para grids 8-direccionales)
@@ -70,63 +77,155 @@ class AssignmentEngine:
                 out.append(r)
         return out
 
+    def _path_cost(self, a: Node, b: Node) -> float:
+        """Coste real usando A* (determinista)."""
+        if a == b:
+            return 0.0
+        _, c = self.planner.astar(a, b)
+        return float(c)
+
+    def _best_route_cost(
+        self, rider: Rider, orders: List[Order]
+    ) -> Tuple[float, List[Node], List[int]]:
+        """
+        Devuelve (coste, waypoints, delivery_queue) para la mejor ruta factible
+        respetando capacidad (<=3) y precedencia pickup -> dropoff.
+        Siempre termina en restaurante para mantener ciclo consistente.
+        """
+        pending_orders = [o for o in orders if o.is_pending()]
+        if not pending_orders:
+            return 0.0, [], []
+
+        drop_list = [(o.order_id, o.dropoff) for o in pending_orders]
+        best_cost = float("inf")
+        best_perm: Optional[Tuple[Tuple[int, Node], ...]] = None
+        best_key: Optional[Tuple[int, ...]] = None
+        EPS = 1e-6
+
+        need_pickup = not rider.has_picked_up
+
+        # NOTE: brute-force permutations. Complexity O(n!) but capacity is capped (≤3),
+        # so this remains small. If capacity grows, replace with scalable heuristic.
+        for perm in itertools.permutations(drop_list):
+            cost = 0.0
+            current = rider.position
+            if need_pickup:
+                cost += self._path_cost(current, self.restaurant_pos)
+                current = self.restaurant_pos
+
+            for _, drop in perm:
+                cost += self._path_cost(current, drop)
+                current = drop
+
+            cost += self._path_cost(current, self.restaurant_pos)
+
+            perm_key = tuple(pid for pid, _ in perm)
+            if (cost + EPS) < best_cost or (
+                abs(cost - best_cost) <= EPS and (best_key is None or perm_key < best_key)
+            ):
+                best_cost = cost
+                best_perm = perm
+                best_key = perm_key
+
+        if best_perm is None:
+            return float("inf"), [], []
+
+        waypoints: List[Node] = []
+        if need_pickup:
+            waypoints.append(self.restaurant_pos)
+        waypoints.extend([drop for _, drop in best_perm])
+        waypoints.append(self.restaurant_pos)
+
+        delivery_queue = [pid for pid, _ in best_perm]
+        return best_cost, waypoints, delivery_queue
+
+    def best_plan_for_rider(
+        self, rider: Rider, orders: List[Order]
+    ) -> Tuple[List[Node], List[int]]:
+        """Helper para reconstruir plan con mejor secuencia de drops."""
+        _, waypoints, dq = self._best_route_cost(rider, orders)
+        return waypoints, dq
+
+    def _delta_cost_for_candidate(
+        self, rider: Rider, current_orders: List[Order], candidate: Order
+    ) -> float:
+        base_cost, _, _ = self._best_route_cost(rider, current_orders)
+        with_cost, _, _ = self._best_route_cost(rider, current_orders + [candidate])
+        return with_cost - base_cost
+
+    def _pick_best(
+        self, orders: List[Order], riders: List[Rider], now: int, urgent_only: bool
+    ) -> Optional[Tuple[Order, Rider]]:
+        orders_map: Dict[int, Order] = {o.order_id: o for o in orders}
+        unassigned = [
+            o
+            for o in orders
+            if o.assigned_to is None
+            and (not urgent_only or o.priority > 1 or (o.deadline - now) <= 8)
+        ]
+        riders = self._eligible_riders(riders)
+        if not unassigned or not riders:
+            return None
+
+        candidates = []
+        for o in unassigned:
+            slack = o.deadline - now
+            for r in riders:
+                assigned_orders = [
+                    orders_map[oid]
+                    for oid in r.assigned_order_ids
+                    if oid in orders_map and orders_map[oid].is_pending()
+                ]
+                if len(assigned_orders) >= r.capacity:
+                    continue
+
+                activation_penalty = self.activation_cost if len(assigned_orders) == 0 else 0.0
+
+                delta = self._delta_cost_for_candidate(r, assigned_orders, o)
+                if delta == float("inf"):
+                    continue
+
+                is_partial = len(assigned_orders) > 0
+                if is_partial and delta > self.max_insertion_delta:
+                    continue
+                if is_partial and (slack - delta) < -self.slack_tolerance:
+                    continue
+
+                effective_cost = delta + activation_penalty
+
+                candidates.append(
+                    (
+                        slack,
+                        effective_cost,
+                        r.rider_id,
+                        o.order_id,
+                        o,
+                        r,
+                    )
+                )
+
+        if not candidates:
+            return None
+
+        # Slack ya fue filtrado; priorizar coste efectivo, luego slack, rider, pedido
+        candidates.sort(key=lambda x: (x[1], x[0], x[2], x[3]))
+        _, _, _, _, order, rider = candidates[0]
+        return order, rider
+
     # -----------------------
     # Picks (OPTIMIZADOS con Octile)
     # -----------------------
     def pick_any_nearest(
-        self, orders: List[Order], riders: List[Rider]
+        self, orders: List[Order], riders: List[Rider], now: int = 0
     ) -> Optional[Tuple[Order, Rider]]:
-        """Selecciona el mejor par (order, rider) usando Octile heuristic."""
-        orders = [o for o in orders if o.assigned_to is None]
-        riders = self._eligible_riders(riders)
-        if not orders or not riders:
-            return None
-
-        best = None
-        best_eta = float("inf")
-
-        for o in orders:
-            for r in riders:
-                # Usar Octile: O(1) en vez de A*: O(N log N)
-                if r.position == self.restaurant_pos:
-                    eta = self._eta_octile_restaurant_to_drop(o)
-                else:
-                    eta = self._eta_octile_rider_to_drop(r, o)
-                if eta < best_eta:
-                    best_eta = eta
-                    best = (o, r)
-        return best
+        """Selecciona el mejor par (order, rider) minimizando coste incremental."""
+        return self._pick_best(orders, riders, now=now, urgent_only=False)
 
     def pick_urgent_nearest(
         self, orders: List[Order], riders: List[Rider], now: int
     ) -> Optional[Tuple[Order, Rider]]:
-        """Selecciona el mejor par urgente (order, rider) usando Octile heuristic."""
-        # URG_SLACK alineado con factored_states.extract_features()
-        URG_SLACK = 8
-        urgent = [
-            o
-            for o in orders
-            if o.assigned_to is None
-            and (o.priority > 1 or (o.deadline - now) <= URG_SLACK)
-        ]
-        riders = self._eligible_riders(riders)
-        if not urgent or not riders:
-            return None
-
-        best = None
-        best_eta = float("inf")
-
-        for o in urgent:
-            for r in riders:
-                # Usar Octile: O(1) en vez de A*: O(N log N)
-                if r.position == self.restaurant_pos:
-                    eta = self._eta_octile_restaurant_to_drop(o)
-                else:
-                    eta = self._eta_octile_rider_to_drop(r, o)
-                if eta < best_eta:
-                    best_eta = eta
-                    best = (o, r)
-        return best
+        """Selecciona el mejor par urgente minimizando coste incremental."""
+        return self._pick_best(orders, riders, now=now, urgent_only=True)
 
     # -----------------------
     # Assign
@@ -138,6 +237,9 @@ class AssignmentEngine:
         if order.order_id not in rider.assigned_order_ids:
             rider.assigned_order_ids.append(order.order_id)
         rider.available = False
+        # Si está en restaurante, obligamos a nuevo pickup (para batching correcto)
+        if rider.position == self.restaurant_pos and not getattr(rider, "delivery_queue", []):
+            rider.has_picked_up = False
 
     def replan_current_leg(self, rider: Rider) -> None:
         tgt = rider.current_target()
