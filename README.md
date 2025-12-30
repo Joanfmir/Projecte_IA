@@ -25,15 +25,15 @@
 
 En ambos casos se mantuvo `epsilon_start=1.0` con schedule lineal hasta `epsilon_end`, seeds fijas y mismos parámetros de simulación. Ajusta episodios/steps para ejecuciones largas; la aceleración proviene del paralelismo y menor overhead de I/O.
 
-## Heuristic benchmark (deterministic)
-- Baseline (rodolfo_intento sin fusión de heurística, seed=42):  
-  `python heuristic_benchmark.py --output baseline_rodolfo.json --seed 42 --episode_len 300 --width 25 --height 25 --riders 4 --spawn 0.15 --max_eta 55 --block_size 5 --street_width 1 --road_closure_prob 0.0 --road_closures_per_event 1 --activation_cost 2.0 --batch_wait_ticks 5`
-- Después de la fusión de heurística (misma seed/config):  
-  `python heuristic_benchmark.py --output after_fusion.json --seed 42 --episode_len 300 --width 25 --height 25 --riders 4 --spawn 0.15 --max_eta 55 --block_size 5 --street_width 1 --road_closure_prob 0.0 --road_closures_per_event 1 --activation_cost 2.0 --batch_wait_ticks 5`
+## Heuristic benchmark (deterministic, apples-to-apples)
+- Baseline (heuristic_mode=baseline, seed=42):  
+  `python heuristic_benchmark.py --variant baseline --output baseline_rodolfo.json --seed 42 --episode_len 300 --width 25 --height 25 --riders 4 --spawn 0.15 --max_eta 55 --block_size 5 --street_width 1 --road_closure_prob 0.0 --road_closures_per_event 1 --activation_cost 2.0 --batch_wait_ticks 5`
+- Fused heuristic (heuristic_mode=fusion, misma seed/config):  
+  `python heuristic_benchmark.py --variant fusion --output after_fusion.json --seed 42 --episode_len 300 --width 25 --height 25 --riders 4 --spawn 0.15 --max_eta 55 --block_size 5 --street_width 1 --road_closure_prob 0.0 --road_closures_per_event 1 --activation_cost 2.0 --batch_wait_ticks 5`
 
 Resultados (seed 42, 300 ticks):
 
-| run                  | reward_total | delivered_total | ontime | late | pending_end | distance_total |
-| -------------------- | ------------ | ---------------- | ------ | ---- | ----------- | -------------- |
-| baseline_rodolfo     | -1227.32     | 23               | 17     | 6    | 22          | 477.0          |
-| after_fusion         | -744.76      | 36               | 22     | 14   | 1           | 835.0          |
+| run              | reward_total | delivered_total | ontime | late | pending_end | distance_total |
+| ---------------- | ------------ | ---------------- | ------ | ---- | ----------- | -------------- |
+| baseline_rodolfo | -583.80      | 34               | 24     | 10   | 11          | 848.0          |
+| after_fusion     | -744.76      | 36               | 22     | 14   | 1           | 835.0          |

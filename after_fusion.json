@@ -12,7 +12,8 @@
     "road_closure_prob": 0.0,
     "road_closures_per_event": 1,
     "activation_cost": 2.0,
-    "batch_wait_ticks": 5
+    "batch_wait_ticks": 5,
+    "heuristic_mode": "fusion"
   },
   "reward_total": -744.7642999999999,
   "delivered_total": 36,

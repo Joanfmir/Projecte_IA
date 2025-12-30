@@ -10,7 +10,8 @@ from core.dispatch_policy import A_ASSIGN_ANY_NEAREST, A_ASSIGN_URGENT_NEAREST
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--output", required=True, help="Ruta donde guardar el JSON de métricas")
+    p.add_argument("--output", required=True, help="Path to save JSON metrics")
+    p.add_argument("--variant", choices=["baseline", "fusion"], default="fusion")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--width", type=int, default=25)
     p.add_argument("--height", type=int, default=25)
@@ -28,6 +29,13 @@ def parse_args():
 
 
 def make_config(args) -> SimConfig:
+    batch_wait = args.batch_wait_ticks
+    heuristic_mode = "fusion"
+    if args.variant == "baseline":
+        # baseline disables fused batching extras but keeps fields comparable
+        batch_wait = 0
+        heuristic_mode = "baseline"
+
     cfg_kwargs = dict(
         width=args.width,
         height=args.height,
@@ -41,7 +49,8 @@ def make_config(args) -> SimConfig:
         road_closure_prob=args.road_closure_prob,
         road_closures_per_event=args.road_closures_per_event,
         activation_cost=args.activation_cost,
-        batch_wait_ticks=args.batch_wait_ticks,
+        batch_wait_ticks=batch_wait,
+        heuristic_mode=heuristic_mode,
     )
     allowed = {f.name for f in fields(SimConfig)}
     filtered = {k: v for k, v in cfg_kwargs.items() if k in allowed}
@@ -66,6 +75,7 @@ def run_episode(sim: Simulator) -> dict:
     riders = sim.fm.get_all()
     distance_total = sum(getattr(r, "distance_travelled", 0.0) for r in riders)
     batch_wait = getattr(sim.cfg, "batch_wait_ticks", None)
+    heuristic_mode = getattr(sim.cfg, "heuristic_mode", None)
     return {
         "seed": sim.cfg.seed,
         "config": {
@@ -81,6 +91,7 @@ def run_episode(sim: Simulator) -> dict:
             "road_closures_per_event": sim.cfg.road_closures_per_event,
             "activation_cost": sim.cfg.activation_cost,
             "batch_wait_ticks": batch_wait,
+            "heuristic_mode": heuristic_mode,
         },
         "reward_total": total_reward,
         "delivered_total": snap.get("delivered_total", 0),
