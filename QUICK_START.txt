@@ -1,0 +1,95 @@
+================================================================================
+  AUDITORÍA PR #12 - QUICK START GUIDE
+================================================================================
+
+DECISIÓN FINAL: ❌ RECHAZADO
+─────────────────────────────────────────────────────────────────────────────
+
+POR QUÉ:
+  1. Baseline incomparable (diferentes branches: pau_intent vs rodolfo_intento)
+  2. Performance degradada 32% (53 → 36 entregas) sin explicación
+  3. Causa raíz no identificada (persiste sin batching)
+
+BLOQUEADORES:
+  🔴 CRITICAL: Invalid baseline comparison (different branches)
+  🔴 CRITICAL: 32% performance degradation unexplained
+
+CORRECCIONES APLICADAS DURANTE AUDITORÍA:
+  ✅ Eliminado spawn cutoff bug (simulation/simulator.py)
+  ✅ Añadidos comentarios clarificadores
+  ✅ Actualizado after_fusion.json
+
+PRÓXIMOS PASOS:
+  1. Leer: CORRECTIONS_CHECKLIST.md (guía paso a paso)
+  2. Ejecutar baseline válido en rodolfo_intento PRE-merge
+  3. Si da ~36: No hay regresión, solo diferentes implementaciones
+  4. Si da ~53: HAY regresión, debuggear con INVESTIGATION_NOTES.md
+  5. Actualizar PR description con tabla comparativa
+  6. Re-solicitar review
+
+─────────────────────────────────────────────────────────────────────────────
+
+DOCUMENTACIÓN GENERADA:
+
+  📄 README_AUDIT.md              - Resumen completo de auditoría
+  📄 AUDIT_REPORT_PR12.md         - Análisis técnico PASS/FAIL detallado
+  📄 INVESTIGATION_NOTES.md       - Debugging y análisis de performance
+  📄 EXECUTIVE_SUMMARY.md         - Resumen ejecutivo para stakeholders
+  📄 CORRECTIONS_CHECKLIST.md     - Lista de correcciones pendientes
+  📄 QUICK_START.txt              - Este archivo
+
+─────────────────────────────────────────────────────────────────────────────
+
+ASPECTOS POSITIVOS:
+  ✅ Scope correcto (solo heurística, no Q-agent)
+  ✅ Invariantes del simulador respetados
+  ✅ Metodología de benchmark correcta
+  ✅ Código limpio y legible
+  ✅ Sin vulnerabilidades de seguridad
+
+ASPECTOS NEGATIVOS:
+  ❌ Baseline de branch diferente (pau_intent vs rodolfo_intento)
+  ❌ Performance degradada 32% sin explicación
+  ❌ Falta tabla comparativa en PR
+  ⚠️  Posible bug en get_available_riders() logic
+
+─────────────────────────────────────────────────────────────────────────────
+
+COMANDO PARA BASELINE VÁLIDO:
+
+git checkout rodolfo_intento  # ANTES de merge
+python heuristic_benchmark.py \
+  --output baseline_rodolfo_pre_merge.json \
+  --seed 42 --episode_len 300 --width 25 --height 25 --riders 4 \
+  --spawn 0.15 --max_eta 55 --block_size 5 --street_width 1 \
+  --road_closure_prob 0.0 --road_closures_per_event 1 \
+  --activation_cost 2.0 --batch_wait_ticks 0
+
+Luego comparar baseline_rodolfo_pre_merge.json vs after_fusion.json
+
+─────────────────────────────────────────────────────────────────────────────
+
+MÉTRICAS ACTUALES:
+
+                        baseline_pau    after_fusion    Change
+  Deliveries                  53             36         -32% ❌
+  On-time                     35             22         -37% ❌
+  Late                        18             14         -22% ✅
+  Pending                      0              9           +9 ❌
+  Distance                   964            835         -13% ⚠️
+  Distance/delivery         18.2           23.2         +27% ❌
+  Reward                  -2503.4        -837.76        +66% ⚠️
+
+⚠️ = Engañoso (reward mejor solo porque hay menos entregas tardías)
+
+─────────────────────────────────────────────────────────────────────────────
+
+CONTACTO:
+  - Detalles técnicos: INVESTIGATION_NOTES.md
+  - Análisis completo: AUDIT_REPORT_PR12.md
+  - Guía correcciones: CORRECTIONS_CHECKLIST.md
+
+================================================================================
+Auditoría completada: 2025-12-30
+Auditor: GitHub Copilot Coding Agent
+================================================================================
