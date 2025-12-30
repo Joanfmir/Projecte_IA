@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import matplotlib
+matplotlib.use('TkAgg')  # Backend interactivo para animaciones en Windows
+
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.patches import Rectangle, Patch
@@ -63,18 +66,8 @@ class Visualizer:
         self.avenues = snap.get("avenues", [])
 
         # FIG / AX principal
-        self.fig, self.ax = plt.subplots()
+        self.fig, self.ax = plt.subplots(figsize=(12, 8))  # Tamaño ventana normal
         self.fig.subplots_adjust(top=0.88, right=0.78)
-
-        # Pantalla completa (best-effort, opcional)
-        mng = plt.get_current_fig_manager()
-        try:
-            mng.window.state("zoomed")  # Windows
-        except Exception:
-            try:
-                mng.full_screen_toggle()  # Alternativa cross-platform
-            except Exception:
-                pass
 
         self.ax.set_xlim(-0.5, self.W - 0.5)
         self.ax.set_ylim(-0.5, self.H - 0.5)
