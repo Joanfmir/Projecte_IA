@@ -14,7 +14,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Tuple
 
-from tqdm import trange
+from tqdm import trange, tqdm
 
 from simulation.simulator import Simulator, SimConfig
 from core.dispatch_policy import A_WAIT
@@ -49,6 +49,8 @@ class ParallelTrainConfig:
     init_q_path: str | None = None
     q_path: str = "artifacts/qtable_factored.pkl"
     metrics_path: str = "artifacts/metrics_factored_parallel.csv"
+    alpha: float = 0.1
+    gamma: float = 0.95
 
 
 @dataclass
@@ -672,7 +674,7 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
         print(f"Checkpoint existente cargado: {q_path}")
     else:
         agent = FactoredQAgent(
-            cfg=FactoredQConfig(),
+            cfg=FactoredQConfig(alpha=cfg.alpha, gamma=cfg.gamma),
             encoder=FactoredStateEncoder(episode_len=max_steps),
             seed=cfg.base_seed,
         )
@@ -729,6 +731,7 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
         writer.writerow(header)
 
         with mp.Pool(processes=cfg.n_workers) as pool:
+            pbar = tqdm(total=n_episodes, desc="Parallel Training", unit="ep")
             episode = 1
             while episode <= n_episodes:
                 chunk_end = min(n_episodes, episode + cfg.sync_every - 1)
@@ -759,10 +762,19 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
                             buffer[ep] = task.get()
                             del tasks[ep]
 
+                    # Update progress bar postfix to show buffered episodes
+                    running_count = len(tasks)
+                    buffered_count = len(buffer)
+                    pbar.set_postfix_str(
+                        f"running={running_count} buffered={buffered_count} waiting_for=ep{expected}"
+                    )
+
                     if expected in buffer:
                         result = buffer.pop(expected)
                         epsilon_ep = epsilon_for_episode(expected)
+                        t_apply_start = time.time()
                         apply_stats = _apply_episode_to_agent(agent, result, epsilon_ep)
+                        t_apply = time.time() - t_apply_start
                         agent.epsilon = epsilon_for_episode(expected + 1)
 
                         global_updates += len(result.transitions)
@@ -827,10 +839,11 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
                         )
 
                         if (expected % cfg.log_every) == 0:
-                            print(
+                            pbar.write(
                                 f"[Ep {expected}] r={result.reward:.2f} "
                                 f"avg50={reward_avg_50:.2f} eps={epsilon_ep:.3f} "
-                                f"delta_max={max_delta:.4f} wait_ratio={wait_ratio:.3f}"
+                                f"delta_max={max_delta:.4f} wait_ratio={wait_ratio:.3f} "
+                                f"apply_time={t_apply:.1f}s"
                             )
                             f.flush()
 
@@ -838,7 +851,7 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
                             eval_summary = _evaluate_greedy(
                                 agent, base_cfg, cfg.eval_episodes, cfg.base_seed
                             )
-                            print(
+                            pbar.write(
                                 f"  Eval@{expected}: reward_avg={eval_summary['reward_avg']:.2f}, "
                                 f"wait_ratio={eval_summary['wait_ratio_avg']:.3f}, "
                                 f"batching_eff={eval_summary['batching_eff_avg']:.3f}"
@@ -849,10 +862,12 @@ def train_parallel(cfg: ParallelTrainConfig) -> None:
                             f.flush()
 
                         expected += 1
+                        pbar.update(1)
                     else:
                         time.sleep(0.01)
 
                 episode = chunk_end + 1
+            pbar.close()
 
     agent.save(q_path)
     print(f"\nEntrenamiento paralelo finalizado. Q-table: {q_path}")
@@ -968,6 +983,18 @@ if __name__ == "__main__":
         default="artifacts/qtable_factored.pkl",
         help="Ruta de Q-table a guardar/cargar",
     )
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=0.1,
+        help="Learning rate (alpha) para Q-learning",
+    )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=0.95,
+        help="Factor de descuento (gamma) para Q-learning",
+    )
     args = parser.parse_args()
 
     if args.parallel:
@@ -991,6 +1018,8 @@ if __name__ == "__main__":
             init_q_path=args.init_qpath,
             q_path=args.qpath,
             metrics_path=args.metrics_path,
+            alpha=args.alpha,
+            gamma=args.gamma,
         )
         train_parallel(parallel_cfg)
     else:

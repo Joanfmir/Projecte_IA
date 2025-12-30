@@ -1,2 +1,0 @@
-episode,reward,reward_avg_50,pending_avg,delivered_total,ontime,late,epsilon,max_delta_q,delta_avg_50,sec_elapsed,seed,Q1_used,Q3_used,Q1_entries,Q3_entries,ticks_total,wait_count,action_count,wait_ratio,avg_rider_load,batching_efficiency,activated_riders
-1,-22242.133,-22242.133,47.059,235,171,64,0.99,61.173943,61.173943,187.01,8,617,3,290,2,900,485,900,0.5389,2.0067,0.9411,6
