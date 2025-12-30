@@ -258,14 +258,19 @@ class Simulator:
             and self.cfg.batch_wait_ticks > 0
             and unassigned_pending
         ):
+            # Lógica: Esperar SOLO si todas las órdenes del rider son muy recientes
+            # Si alguna orden ya lleva >2 ticks esperando, NO esperar más (salir inmediatamente)
+            # Esto evita tardanzas por esperar demasiado cuando ya hay órdenes urgentes
             any_waiting = any(
                 (self.t - o.created_at) > AGE_WAIT_GRACE
                 for o in pending_orders
                 if o is not None
             )
             if any_waiting:
+                # Hay órdenes que ya llevan tiempo -> no esperar, salir ya
                 rider.wait_until = 0
             else:
+                # Todas las órdenes son recientes -> esperar para potencial batching
                 rider.wait_until = max(rider.wait_until, self.t + self.cfg.batch_wait_ticks)
         else:
             rider.wait_until = 0
@@ -367,10 +372,6 @@ class Simulator:
     # Generación de pedidos / tráfico
     # -------------------
     def maybe_spawn_order(self) -> None:
-        # Evitar crear pedidos que ya no podrían entregarse antes del fin de episodio
-        ticks_remaining = self.cfg.episode_len - self.t
-        if ticks_remaining <= self.cfg.max_eta:
-            return
         if self.rng.random() < self.cfg.order_spawn_prob:
             drop = self._random_walkable_cell()
             if drop is None:
