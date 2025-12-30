@@ -75,6 +75,6 @@ class FleetManager:
             if r.available:
                 result.append(r)
                 continue
-            if getattr(r, "wait_until", 0) > 0 and r.can_take_more():
+            if r.wait_until > 0 and r.can_take_more():
                 result.append(r)
         return result
