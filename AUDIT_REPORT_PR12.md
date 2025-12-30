@@ -6,10 +6,17 @@
 
 ---
 
-## ❌ **RECHAZADO**
+## ❌ **RECHAZADO - AUDITORÍA FALLIDA**
 
 ### Resumen Ejecutivo
-El PR presenta violaciones críticas que impactan severamente el rendimiento del sistema. Los resultados del benchmark post-fusión muestran una **degradación del 32% en entregas totales** (36 vs 53), lo cual es inaceptable sin corrección.
+El PR presenta **violaciones críticas** que hacen imposible validar la fusión:
+
+1. **Degradación inexplicable del 32% en entregas** (53 → 36, ahora 36 con 9 pending)
+2. **Baseline incomparable:** Los resultados sugieren que `pau_intent` y `rodolfo_intento` tienen implementaciones fundamentalmente diferentes
+3. **Fix parcial aplicado:** Se eliminó el spawn cutoff, pero la degradación persiste
+4. **Causa raíz no identificada:** Incluso sin batching wait (batch_wait_ticks=0), solo se logran 34 entregas vs 53 del baseline
+
+**El PR NO puede ser aprobado hasta que se identifique y corrija la causa raíz de la degradación.**
 
 ---
 
@@ -245,27 +252,63 @@ at tick 245 instead of 300, reducing total deliverable orders by ~18%.
 ## Resumen de Correcciones Requeridas
 
 ### 🔴 CRÍTICAS (MUST FIX antes de merge)
-1. **Eliminar/relajar el guard de `maybe_spawn_order`** (simulation/simulator.py:372)
-   - Eliminar completamente el check `if ticks_remaining <= self.cfg.max_eta`
-   - O cambiar a un margen mínimo realista (ej. < 10 ticks)
 
-2. **Re-ejecutar benchmark post-corrección**
-   - Correr nuevamente con seed 42 y misma config
-   - Verificar que deliveries vuelven a niveles aceptables (≥50)
-   - Actualizar `after_fusion.json` con nuevos resultados
+**PROBLEMA FUNDAMENTAL: Baseline Incomparable**
 
-3. **Añadir tabla comparativa en PR description**
-   - Explicar root cause de la degradación inicial
-   - Mostrar resultados post-corrección
+Los datos sugieren que `baseline_pau.json` NO fue ejecutado con código comparable a `after_fusion`:
+
+| Evidencia | Observación |
+|-----------|-------------|
+| Deliveries | 53 (baseline) vs 36 (after) - Diferencia del 32% |
+| Distance/delivery | 18.2 (baseline) vs 23.2 (after) - After es 27% menos eficiente |
+| Pending orders | 0 (baseline) vs 9 (after) - After tiene backlog significativo |
+| **Test sin batching** | **34 deliveries** - Confirma que batching NO es el problema |
+
+**Conclusión:** La degradación NO es por la fusión de heurística, sino por diferencias fundamentales de implementación entre branches.
+
+### Correcciones Obligatorias:
+
+1. **RE-EJECUTAR baseline en branch actual**
+   ```bash
+   # Ejecutar en rodolfo_intento ANTES de la fusión con pau_intent
+   git checkout rodolfo_intento
+   python heuristic_benchmark.py --output baseline_rodolfo_pre_merge.json \
+     --seed 42 --episode_len 300 --width 25 --height 25 --riders 4 \
+     --spawn 0.15 --max_eta 55 --block_size 5 --street_width 1 \
+     --road_closure_prob 0.0 --road_closures_per_event 1 \
+     --activation_cost 2.0 --batch_wait_ticks 0
+   ```
+
+2. **Comparar apples-to-apples**
+   - `baseline_rodolfo_pre_merge.json` (rodolfo ANTES de fusión)
+   - `after_fusion.json` (rodolfo DESPUÉS de fusión)
+   - Ambos deben usar **mismo heuristic_benchmark.py**
+
+3. **Si baseline_pau.json era de branch pau_intent diferente:**
+   - **NO es una comparación válida** para este PR
+   - El PR fusiona heurística de pau_intent a rodolfo_intento
+   - La comparación debe ser "rodolfo antes" vs "rodolfo después"
+   - NO "pau_intent" vs "rodolfo_intento" (son implementaciones diferentes)
+
+4. **Documentar diferencias entre branches**
+   - ¿Qué tiene pau_intent que rodolfo_intento no tiene?
+   - ¿Hay diferencias en assignment_engine?
+   - ¿Hay diferencias en dispatch_policy?
+   - ¿Hay diferencias en order_manager o fleet_manager (aparte de wait_until)?
 
 ### 🟡 RECOMENDADAS (SHOULD FIX)
-4. **Clarificar lógica de batching wait** (simulation/simulator.py:261-269)
-   - Añadir comentarios explicando la intención
-   - O invertir si la lógica está al revés
 
-5. **Añadir unit tests para batching**
-   - Verificar que wait_until se settea correctamente
-   - Verificar que riders esperan cuando deben
+5. **Investigar causa raíz si la degradación persiste**
+   - Añadir logging/metrics detallados:
+     - Órdenes generadas por tick
+     - Órdenes asignadas por tick
+     - Riders disponibles por tick
+     - Tiempo de espera promedio en restaurante
+   - Comparar estos metrics entre baseline y after
+
+6. **Considerar simplificar batching logic**
+   - La lógica actual es compleja y podría tener bugs sutiles
+   - Considerar batching más simple: "esperar X ticks O hasta que llegue orden urgente"
 
 ---
 
