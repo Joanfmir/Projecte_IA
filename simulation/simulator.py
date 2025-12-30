@@ -32,6 +32,9 @@ class SimConfig:
     seed: int = 7
     activation_cost: float = 2.0
 
+    # batching heurística
+    batch_wait_ticks: int = 5
+
     # urban layout
     block_size: int = 5
     street_width: int = 1
@@ -218,6 +221,7 @@ class Simulator:
         if not rider.assigned_order_ids:
             rider.delivery_queue = []
             rider.has_picked_up = False
+            rider.wait_until = 0
 
             if rider.position != self.restaurant:
                 rider.available = False
@@ -241,6 +245,27 @@ class Simulator:
         rider.delivery_queue = dq
         rider.waypoints = waypoints
         rider.waypoint_idx = 0
+
+        # Batching: si estamos en restaurante y podemos acumular, espera unos ticks
+        unassigned_pending = [
+            o for o in self.om.get_pending_orders() if o.assigned_to is None
+        ]
+        if (
+            (not rider.has_picked_up)
+            and rider.position == self.restaurant
+            and rider.can_take_more()
+            and self.cfg.batch_wait_ticks > 0
+            and unassigned_pending
+        ):
+            any_waiting = any(
+                (self.t - o.created_at) > 2 for o in pending_orders if o is not None
+            )
+            if any_waiting:
+                rider.wait_until = 0
+            else:
+                rider.wait_until = max(rider.wait_until, self.t + self.cfg.batch_wait_ticks)
+        else:
+            rider.wait_until = 0
         tgt = rider.current_target()
         if tgt is None:
             rider.route = []
@@ -339,6 +364,10 @@ class Simulator:
     # Generación de pedidos / tráfico
     # -------------------
     def maybe_spawn_order(self) -> None:
+        # Evitar crear pedidos que ya no podrían entregarse antes del fin de episodio
+        ticks_remaining = self.cfg.episode_len - self.t
+        if ticks_remaining <= self.cfg.max_eta:
+            return
         if self.rng.random() < self.cfg.order_spawn_prob:
             drop = self._random_walkable_cell()
             if drop is None:
@@ -459,19 +488,18 @@ class Simulator:
                     tgt == self.restaurant
                     and (not r.has_picked_up)
                     and r.assigned_order_ids
+                    and r.wait_until > self.t
+                    and r.can_take_more()
                 ):
-                    # Esperar en restaurante si queda backlog por asignar y hay capacidad
-                    any_other_eligible = any(
-                        (r2.rider_id != r.rider_id)
-                        and (not getattr(r2, "resting", False))
-                        and (len(r2.assigned_order_ids) < getattr(r2, "capacity", 3))
-                        for r2 in self.fm.get_all()
-                    )
-                    if remaining_unassigned_global and r.can_take_more() and any_other_eligible:
-                        r.available = False
-                        continue
-
+                    r.available = False
+                    continue
+                if (
+                    tgt == self.restaurant
+                    and (not r.has_picked_up)
+                    and r.assigned_order_ids
+                ):
                     r.has_picked_up = True
+                    r.wait_until = 0
 
                     # ✅ marcar picked_up_at en todos sus pedidos pendientes
                     for oid in list(r.assigned_order_ids):
