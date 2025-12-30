@@ -12,13 +12,13 @@
     "road_closure_prob": 0.0,
     "road_closures_per_event": 1,
     "activation_cost": 2.0,
-    "batch_wait_ticks": 5
+    "batch_wait_ticks": null
   },
-  "reward_total": -744.7642999999999,
-  "delivered_total": 36,
-  "delivered_ontime": 22,
-  "delivered_late": 14,
-  "pending_end": 1,
+  "reward_total": -1227.32115,
+  "delivered_total": 23,
+  "delivered_ontime": 17,
+  "delivered_late": 6,
+  "pending_end": 22,
   "ticks": 300,
-  "distance_total": 835.0
+  "distance_total": 477.0
 }

@@ -65,7 +65,23 @@ def run_episode(sim: Simulator) -> dict:
     snap = sim.snapshot()
     riders = sim.fm.get_all()
     distance_total = sum(getattr(r, "distance_travelled", 0.0) for r in riders)
+    batch_wait = getattr(sim.cfg, "batch_wait_ticks", None)
     return {
+        "seed": sim.cfg.seed,
+        "config": {
+            "width": sim.cfg.width,
+            "height": sim.cfg.height,
+            "n_riders": sim.cfg.n_riders,
+            "episode_len": sim.cfg.episode_len,
+            "order_spawn_prob": sim.cfg.order_spawn_prob,
+            "max_eta": sim.cfg.max_eta,
+            "block_size": sim.cfg.block_size,
+            "street_width": sim.cfg.street_width,
+            "road_closure_prob": sim.cfg.road_closure_prob,
+            "road_closures_per_event": sim.cfg.road_closures_per_event,
+            "activation_cost": sim.cfg.activation_cost,
+            "batch_wait_ticks": batch_wait,
+        },
         "reward_total": total_reward,
         "delivered_total": snap.get("delivered_total", 0),
         "delivered_ontime": snap.get("delivered_ontime", 0),
