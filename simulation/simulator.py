@@ -250,6 +250,7 @@ class Simulator:
         unassigned_pending = [
             o for o in self.om.get_pending_orders() if o.assigned_to is None
         ]
+        AGE_WAIT_GRACE = 2
         if (
             (not rider.has_picked_up)
             and rider.position == self.restaurant
@@ -258,7 +259,9 @@ class Simulator:
             and unassigned_pending
         ):
             any_waiting = any(
-                (self.t - o.created_at) > 2 for o in pending_orders if o is not None
+                (self.t - o.created_at) > AGE_WAIT_GRACE
+                for o in pending_orders
+                if o is not None
             )
             if any_waiting:
                 rider.wait_until = 0
