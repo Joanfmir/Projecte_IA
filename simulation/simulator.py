@@ -34,7 +34,6 @@ class SimConfig:
 
     # batching heurística
     batch_wait_ticks: int = 5
-    heuristic_mode: str = "fusion"  # "baseline" desactiva la lógica fusionada
 
     # urban layout
     block_size: int = 5
@@ -55,7 +54,6 @@ class Simulator:
     def __init__(self, cfg: SimConfig):
         self.cfg = cfg
         self.rng = random.Random(cfg.seed)
-        self.use_fusion = getattr(cfg, "heuristic_mode", "fusion") == "fusion"
 
         self.avenues: List[dict] = []
         self.buildings: Set[Node] = self._generate_urban_buildings()
@@ -249,29 +247,26 @@ class Simulator:
         rider.waypoint_idx = 0
 
         # Batching: si estamos en restaurante y podemos acumular, espera unos ticks
-        if self.use_fusion:
-            unassigned_pending = [
-                o for o in self.om.get_pending_orders() if o.assigned_to is None
-            ]
-            AGE_WAIT_GRACE = 2
-            if (
-                (not rider.has_picked_up)
-                and rider.position == self.restaurant
-                and rider.can_take_more()
-                and self.cfg.batch_wait_ticks > 0
-                and unassigned_pending
-            ):
-                any_waiting = any(
-                    (self.t - o.created_at) > AGE_WAIT_GRACE
-                    for o in pending_orders
-                    if o is not None
-                )
-                if any_waiting:
-                    rider.wait_until = 0
-                else:
-                    rider.wait_until = max(rider.wait_until, self.t + self.cfg.batch_wait_ticks)
-            else:
+        unassigned_pending = [
+            o for o in self.om.get_pending_orders() if o.assigned_to is None
+        ]
+        AGE_WAIT_GRACE = 2
+        if (
+            (not rider.has_picked_up)
+            and rider.position == self.restaurant
+            and rider.can_take_more()
+            and self.cfg.batch_wait_ticks > 0
+            and unassigned_pending
+        ):
+            any_waiting = any(
+                (self.t - o.created_at) > AGE_WAIT_GRACE
+                for o in pending_orders
+                if o is not None
+            )
+            if any_waiting:
                 rider.wait_until = 0
+            else:
+                rider.wait_until = max(rider.wait_until, self.t + self.cfg.batch_wait_ticks)
         else:
             rider.wait_until = 0
         tgt = rider.current_target()
@@ -361,6 +356,7 @@ class Simulator:
             "closures": self.graph.count_closed_directed(),
             "closed_edges": self.graph.get_closed_edges_sample(),  # Para visualizador
             "blocked": self.graph.count_blocked(),
+            "blocked_nodes": list(self.graph.blocked - self.buildings),
             "width": self.cfg.width,
             "height": self.cfg.height,
             "delivered_total": delivered_total,
@@ -372,11 +368,10 @@ class Simulator:
     # Generación de pedidos / tráfico
     # -------------------
     def maybe_spawn_order(self) -> None:
-        # Evitar crear pedidos que ya no podrían entregarse antes del fin de episodio (solo modo fusion)
-        if self.use_fusion:
-            ticks_remaining = self.cfg.episode_len - self.t
-            if ticks_remaining <= self.cfg.max_eta:
-                return
+        # Evitar crear pedidos que ya no podrían entregarse antes del fin de episodio
+        ticks_remaining = self.cfg.episode_len - self.t
+        if ticks_remaining <= self.cfg.max_eta:
+            return
         if self.rng.random() < self.cfg.order_spawn_prob:
             drop = self._random_walkable_cell()
             if drop is None:
@@ -493,16 +488,15 @@ class Simulator:
 
             if r.position == tgt and r.waypoints:
                 # (A) llega a restaurante y aún no ha recogido -> recoger
-                if self.use_fusion:
-                    if (
-                        tgt == self.restaurant
-                        and (not r.has_picked_up)
-                        and r.assigned_order_ids
-                        and r.wait_until > self.t
-                        and r.can_take_more()
-                    ):
-                        r.available = False
-                        continue
+                if (
+                    tgt == self.restaurant
+                    and (not r.has_picked_up)
+                    and r.assigned_order_ids
+                    and r.wait_until > self.t
+                    and r.can_take_more()
+                ):
+                    r.available = False
+                    continue
                 if (
                     tgt == self.restaurant
                     and (not r.has_picked_up)

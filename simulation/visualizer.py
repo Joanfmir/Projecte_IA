@@ -1,4 +1,3 @@
-# simulation/visualizer.py
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
@@ -10,13 +9,36 @@ from matplotlib.collections import LineCollection
 from core.dispatch_policy import A_ASSIGN_ANY_NEAREST
 
 
+def ticks_to_time(t: int, episode_len: int) -> str:
+    """
+    Convierte ticks de simulación a formato hora HH:MM.
+    Empieza a las 19:00 y termina a las 00:00 (5 horas = 300 minutos).
+    """
+    total_minutes = 300  # 5 horas (19:00 a 00:00)
+    minutes_elapsed = (t / episode_len) * total_minutes
+
+    start_hour = 19
+    start_minutes = start_hour * 60  # 19:00 = 1140 minutos desde medianoche
+
+    current_minutes = start_minutes + minutes_elapsed
+
+    # Si pasa de medianoche (1440 minutos)
+    if current_minutes >= 1440:
+        current_minutes -= 1440
+
+    hours = int(current_minutes // 60)
+    mins = int(current_minutes % 60)
+
+    return f"{hours:02d}:{mins:02d}"
+
+
 class Visualizer:
     """
     Visualizer optimizado + robusto:
     - No recrea objetos por frame (evita ralentización)
     - Stats se actualizan cada N ticks
     - Rutas se recortan a K pasos
-    - Tráfico por zonas: soporta varias keys y fallback a tráfico global
+    - Tráfico por zonas: soporta varias keys y fallback al tráfico global
     """
 
     def __init__(
@@ -32,6 +54,7 @@ class Visualizer:
         self.interval_ms = interval_ms
         self.stats_every = max(1, int(stats_every))
         self.route_draw_limit = max(5, int(route_draw_limit))
+        self.episode_len = sim.cfg.episode_len
 
         snap = self.sim.snapshot()
         self.W = snap["width"]
@@ -43,22 +66,31 @@ class Visualizer:
         self.fig, self.ax = plt.subplots()
         self.fig.subplots_adjust(top=0.88, right=0.78)
 
+        # Pantalla completa (best-effort, opcional)
+        mng = plt.get_current_fig_manager()
+        try:
+            mng.window.state("zoomed")  # Windows
+        except Exception:
+            try:
+                mng.full_screen_toggle()  # Alternativa cross-platform
+            except Exception:
+                pass
+
         self.ax.set_xlim(-0.5, self.W - 0.5)
         self.ax.set_ylim(-0.5, self.H - 0.5)
         self.ax.set_aspect("equal")
 
         # Fondo + grid
-        self.ax.set_facecolor("#f5f5f5")
+        self.ax.set_facecolor("#d3d3d3")  # gris claro para carretera
         self.ax.set_xticks(range(self.W))
         self.ax.set_yticks(range(self.H))
-        self.ax.grid(True, linewidth=1.0, alpha=0.10)
+        self.ax.grid(False)
         self.ax.set_xticklabels([])
         self.ax.set_yticklabels([])
         self.ax.tick_params(length=0)
 
         # Estático
         self._draw_buildings()
-        self._draw_avenues()
 
         # Cierres (rojo)
         self.closed_lc = LineCollection([], linewidths=3.0, alpha=0.9, colors="#d62728")
@@ -68,15 +100,25 @@ class Visualizer:
 
         # HUD
         self.hud = self.fig.text(
-            0.02, 0.96, "",
-            fontsize=11, ha="left", va="top",
-            bbox=dict(boxstyle="round,pad=0.35", facecolor="white", alpha=0.75, edgecolor="none")
+            0.02,
+            0.96,
+            "",
+            fontsize=11,
+            ha="left",
+            va="top",
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="white", alpha=0.75, edgecolor="none"),
         )
 
         # Capas dinámicas
         self.shop = self.ax.scatter([], [], s=320, marker="s", color="#ff7f0e")
-        self.orders_normal = self.ax.scatter([], [], s=90, marker="o", color="#2ca02c")
-        self.orders_urgent = self.ax.scatter([], [], s=160, marker="o", color="#d62728")
+        # Pedidos normales: círculos verdes translúcidos con reborde
+        self.orders_normal = self.ax.scatter(
+            [], [], s=90, marker="o", facecolor="#2ca02c", edgecolor="#145a32", alpha=0.55, linewidths=1.5
+        )
+        # Pedidos urgentes: estrellas rojas
+        self.orders_urgent = self.ax.scatter(
+            [], [], s=160, marker="*", facecolor="#d62728", edgecolor="#7b241c", alpha=0.85, linewidths=1.8
+        )
 
         self.rider_scatters = []
         self.route_lines = []
@@ -94,16 +136,20 @@ class Visualizer:
         self.ax_stats = self.fig.add_axes([0.02, 0.06, 0.23, 0.40])
         self.ax_stats.axis("off")
         self.ax_stats.set_title("Stats (tiempo real)", fontsize=12)
-        self.stats_text = self.ax_stats.text(
-            0.0, 1.0, "",
-            va="top", ha="left",
-            fontsize=9,
-            family="monospace"
+        self.stats_text = self.ax_stats.text(0.0, 1.0, "", va="top", ha="left", fontsize=9, family="monospace")
+
+        # Panel "App del Rider" a la derecha (más arriba)
+        self.ax_rider_app = self.fig.add_axes([0.82, 0.15, 0.17, 0.45])
+        self.ax_rider_app.axis("off")
+        self.ax_rider_app.set_title("App Riders", fontsize=11, fontweight="bold")
+        self.rider_app_text = self.ax_rider_app.text(
+            0.0, 1.0, "", va="top", ha="left", fontsize=8, family="monospace"
         )
 
         # init
         self._update_zone_legend(snap)
         self._update_stats_panel(snap)
+        self._update_rider_app(snap)
         self._last_stats_t = -10**9
 
     # -------------------------
@@ -111,48 +157,41 @@ class Visualizer:
     # -------------------------
     def _draw_buildings(self):
         for (x, y) in self.buildings:
-            rect = Rectangle((x - 0.5, y - 0.5), 1, 1, linewidth=0,
-                             facecolor="#273043", alpha=0.35)
+            rect = Rectangle((x - 0.5, y - 0.5), 1, 1, linewidth=0, facecolor="#1a237e", alpha=0.55)
             self.ax.add_patch(rect)
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nx, ny = x + dx, y + dy
+                if (nx, ny) not in self.buildings:
+                    x0, y0 = x + 0.5 * dx, y + 0.5 * dy
+                    x1, y1 = x + 0.5 * dx + 0.5 * (1 - dx * dx), y + 0.5 * dy + 0.5 * (1 - dy * dy)
+                    self.ax.plot([x0, x1], [y0, y1], color="#0d1a4a", linewidth=1.1, alpha=0.95, zorder=5, linestyle="solid")
 
-    def _draw_avenues(self):
-        W, H = self.W, self.H
-        for av in self.avenues:
-            m = av.get("m", 1.0)
-            b = av.get("b", 0.0)
+    def _draw_road_closures(self, blocked_nodes):
+        """Dibuja los cierres de calle como cuadrados naranjas (obras)."""
+        if hasattr(self, "_closure_patches"):
+            for p in self._closure_patches:
+                p.remove()
+        self._closure_patches = []
 
-            xs, ys = [], []
-            for x in range(W):
-                y = m * x + b
-                if 0 <= y <= H - 1:
-                    xs.append(x)
-                    ys.append(y)
-
-            if len(xs) >= 2:
-                self.ax.plot(xs, ys, linewidth=3.5, alpha=0.10, color="#666666")
+        for node in blocked_nodes:
+            if isinstance(node, (list, tuple)) and len(node) == 2:
+                x, y = node
+                rect = Rectangle((x - 0.5, y - 0.5), 1, 1, linewidth=1, facecolor="#e74c3c", edgecolor="#c0392b", alpha=0.7)
+                self.ax.add_patch(rect)
+                self._closure_patches.append(rect)
 
     def _build_main_legend(self):
         handles = [
-            Line2D([0], [0], marker="s", linestyle="None", markersize=11,
-                   markerfacecolor="#ff7f0e", markeredgecolor="none", label="Restaurante"),
-            Line2D([0], [0], marker="o", linestyle="None", markersize=8,
-                   markerfacecolor="#2ca02c", markeredgecolor="none", label="Pedido (normal)"),
-            Line2D([0], [0], marker="o", linestyle="None", markersize=10,
-                   markerfacecolor="#d62728", markeredgecolor="none", label="Pedido (urgente)"),
-            Line2D([0], [0], marker="^", linestyle="None", markersize=10,
-                   markerfacecolor="#1f77b4", markeredgecolor="none", label="Repartidor"),
-            Line2D([0], [0], linewidth=2, color="#1f77b4", label="Ruta"),
-            Line2D([0], [0], linewidth=3, color="#d62728", label="Calle cortada"),
+            Line2D([0], [0], marker="s", linestyle="None", markersize=11, markerfacecolor="#ff7f0e", markeredgecolor="none", label="Restaurante"),
+            Line2D([0], [0], marker="o", linestyle="None", markersize=10, markerfacecolor="#2ca02c", markeredgecolor="#145a32", alpha=0.55, label="Pedido (normal)"),
+            Line2D([0], [0], marker="*", linestyle="None", markersize=13, markerfacecolor="#d62728", markeredgecolor="#7b241c", alpha=0.85, label="Pedido (urgente)"),
+            Line2D([0], [0], marker="D", linestyle="None", markersize=10, markerfacecolor="#1f77b4", markeredgecolor="white", label="Repartidor"),
+            Line2D([0], [0], linewidth=1.2, color="#1f77b4", linestyle="--", label="Ruta (entregando)"),
+            Line2D([0], [0], linewidth=1.2, color="#e74c3c", linestyle="--", label="Ruta (volviendo)"),
+            Rectangle((0, 0), 1, 1, facecolor="#e74c3c", edgecolor="#c0392b", alpha=0.7, label="Calle cortada"),
             Rectangle((0, 0), 1, 1, facecolor="#273043", alpha=0.35, label="Edificio / manzana"),
         ]
-        return self.ax.legend(
-            handles=handles,
-            loc="upper left",
-            bbox_to_anchor=(1.01, 1.0),
-            frameon=True,
-            title="Leyenda",
-            borderaxespad=0.0
-        )
+        return self.ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=True, title="Leyenda", borderaxespad=0.0)
 
     def _build_zone_legend(self):
         patches = [
@@ -161,27 +200,16 @@ class Visualizer:
             Patch(facecolor="#fff2cc", edgecolor="none", label="Z2 (BL): ?"),
             Patch(facecolor="#ffd6d6", edgecolor="none", label="Z3 (BR): ?"),
         ]
-        leg = self.ax.legend(
-            handles=patches,
-            loc="upper left",
-            bbox_to_anchor=(1.01, 0.55),
-            frameon=True,
-            title="Tráfico por zonas",
-            borderaxespad=0.0
-        )
+        leg = self.ax.legend(handles=patches, loc="upper left", bbox_to_anchor=(1.01, 0.55), frameon=True, title="Tráfico por zonas", borderaxespad=0.0)
         return patches, leg, leg.get_texts()
 
     def _draw_zone_labels(self):
         W, H = self.W, self.H
         fs = 14
-        self.ax.text(W * 0.25, H * 0.75, "Z0 (TL)", fontsize=fs, weight="bold",
-                     ha="center", va="center", alpha=0.25)
-        self.ax.text(W * 0.75, H * 0.75, "Z1 (TR)", fontsize=fs, weight="bold",
-                     ha="center", va="center", alpha=0.25)
-        self.ax.text(W * 0.25, H * 0.25, "Z2 (BL)", fontsize=fs, weight="bold",
-                     ha="center", va="center", alpha=0.25)
-        self.ax.text(W * 0.75, H * 0.25, "Z3 (BR)", fontsize=fs, weight="bold",
-                     ha="center", va="center", alpha=0.25)
+        self.ax.text(W * 0.25, H * 0.75, "Z0 (TL)", fontsize=fs, weight="bold", ha="center", va="center", alpha=0.25)
+        self.ax.text(W * 0.75, H * 0.75, "Z1 (TR)", fontsize=fs, weight="bold", ha="center", va="center", alpha=0.25)
+        self.ax.text(W * 0.25, H * 0.25, "Z2 (BL)", fontsize=fs, weight="bold", ha="center", va="center", alpha=0.25)
+        self.ax.text(W * 0.75, H * 0.25, "Z3 (BR)", fontsize=fs, weight="bold", ha="center", va="center", alpha=0.25)
 
     # -------------------------
     # Tráfico por zonas (ROBUSTO)
@@ -192,26 +220,21 @@ class Visualizer:
         Soporta varias keys y fallback al tráfico global.
         """
         zones = None
-
-        # posibles nombres que puede traer tu snapshot
         for k in ("traffic_zones", "zone_traffic", "zone_levels", "zones_traffic"):
             v = snap.get(k, None)
             if isinstance(v, dict) and v:
                 zones = v
                 break
 
-        # si viene como lista/tupla de 4 strings
         if zones is None:
             v = snap.get("traffic_zones", None)
             if isinstance(v, (list, tuple)) and len(v) == 4:
                 zones = {i: v[i] for i in range(4)}
 
-        # fallback: usar tráfico global en todas las zonas
         if zones is None or not isinstance(zones, dict):
             g = snap.get("traffic", snap.get("traffic_level", "mixed"))
             zones = {0: g, 1: g, 2: g, 3: g}
 
-        # normalizamos keys por si vienen como "0","1"
         out = {}
         for i in range(4):
             if i in zones:
@@ -240,17 +263,16 @@ class Visualizer:
         riders = snap.get("riders", [])
         orders_full = snap.get("orders_full", [])
 
+        time_str = ticks_to_time(t, self.episode_len)
         lines = []
-        lines.append(f"t={t}")
+        lines.append(f"Hora: {time_str}")
         lines.append("")
         lines.append("RIDERS")
         lines.append("------")
 
         for r in riders:
-            rid = r["id"]
+            name = r.get("name", f"R{r['id']}")
             x, y = r["pos"]
-            fat = r.get("fatigue", 0.0)
-            rew = r.get("reward", 0.0)
 
             avail = r.get("available", True)
             route_len = len(r.get("route", []))
@@ -263,9 +285,7 @@ class Visualizer:
             else:
                 carry_txt = str(carrying)
 
-            lines.append(
-                f"R{rid:02d} pos=({x:2d},{y:2d}) fat={fat:4.2f} av={int(avail)} carry={carry_txt:<5} route={route_len:3d}"
-            )
+            lines.append(f"{name:6s} pos=({x:2d},{y:2d}) av={int(avail)} carry={carry_txt:<5} route={route_len:3d}")
 
         lines.append("")
         lines.append("ORDERS (últimos 8)")
@@ -298,16 +318,84 @@ class Visualizer:
 
         self.stats_text.set_text("\n".join(lines))
 
+    def _update_rider_app(self, snap: dict):
+        """Muestra la 'app' de cada rider con sus pedidos asignados."""
+        t = snap["t"]
+        riders = snap.get("riders", [])
+        orders_full = snap.get("orders_full", [])
+        restaurant = snap.get("restaurant", (0, 0))
+
+        orders_by_id = {o["id"]: o for o in orders_full}
+
+        lines = []
+        for r in riders:
+            name = r.get("name", f"R{r['id']}")
+            carrying = r.get("carrying", None)
+            assigned_ids = r.get("assigned", [])
+            resting = r.get("resting", False)
+            picked = r.get("picked", False)
+
+            lines.append(f"+------------------+")
+            lines.append(f"|  {name:^14s}  |")
+            lines.append(f"+------------------+")
+
+            if resting:
+                lines.append(f"| [ZZZ] Descansando|")
+                lines.append(f"+------------------+")
+                lines.append("")
+                continue
+
+            if not assigned_ids:
+                lines.append(f"| [OK] Sin pedidos |")
+                lines.append(f"|    Esperando...  |")
+                lines.append(f"+------------------+")
+                lines.append("")
+                continue
+
+            if picked and not assigned_ids:
+                lines.append(f"| >> Volviendo     |")
+            elif not picked:
+                lines.append(f"| >> Recogiendo... |")
+            else:
+                lines.append(f"| >> Entregando    |")
+
+            for oid in assigned_ids:
+                o = orders_by_id.get(oid)
+                if o is None:
+                    continue
+
+                dropoff = o.get("dropoff", (0, 0))
+                priority = o.get("priority", 1)
+                deadline = o.get("deadline", 0)
+                status = o.get("status", "pending")
+
+                tiempo_rest = deadline - t
+                prio_txt = "[!]" if priority > 1 else "   "
+
+                current = ">>" if carrying == oid else "  "
+
+                lines.append(f"|{current}{prio_txt} Pedido {oid:<3}  |")
+                lines.append(f"|    Dest: ({dropoff[0]:2},{dropoff[1]:2}) |")
+                if tiempo_rest > 0:
+                    lines.append(f"|    Tiempo: {tiempo_rest:3}t  |")
+                else:
+                    lines.append(f"|    !! TARDE !!   |")
+                lines.append(f"+------------------+")
+
+            lines.append("")
+
+        self.rider_app_text.set_text("\n".join(lines))
+
     # -------------------------
     # Dinámica
     # -------------------------
     def _ensure_riders(self, n: int):
         while len(self.rider_scatters) < n:
-            sc = self.ax.scatter([], [], s=170, marker="^", color="#1f77b4")
+            sc = self.ax.scatter([], [], s=120, marker="D", color="#1f77b4", edgecolors="white", linewidths=1.2, zorder=10)
             self.rider_scatters.append(sc)
-            (ln,) = self.ax.plot([], [], linewidth=2, color="#1f77b4")
+            (ln,) = self.ax.plot([], [], linewidth=1.2, color="#1f77b4", linestyle="--")
             self.route_lines.append(ln)
-            txt = self.ax.text(0, 0, "", fontsize=9, ha="left", va="bottom")
+            txt = self.ax.text(0, 0, "", fontsize=8, ha="left", va="bottom", fontweight="bold")
             self.rider_labels.append(txt)
 
     def _safe_offsets(self, pts):
@@ -336,8 +424,9 @@ class Visualizer:
         closures = snap.get("closures", 0)
         blocked = snap.get("blocked", 0)
 
+        time_str = ticks_to_time(t, self.episode_len)
         self.hud.set_text(
-            f"t={t}   pending={len(orders)}   riders={len(riders)}   traffic={traffic}   closures={closures}   blocked={blocked}"
+            f"Hora: {time_str}   pending={len(orders)}   riders={len(riders)}   traffic={traffic}   closures={closures}   blocked={blocked}"
         )
 
         # restaurante
@@ -347,14 +436,16 @@ class Visualizer:
         # pedidos
         normal_pts, urgent_pts = [], []
         for (loc, priority, *_rest) in orders:
-            (urgent_pts if priority > 1 else normal_pts).append([loc[0], loc[1]])
+            if priority > 1:
+                urgent_pts.append([loc[0], loc[1]])
+            else:
+                normal_pts.append([loc[0], loc[1]])
         self.orders_normal.set_offsets(self._safe_offsets(normal_pts))
         self.orders_urgent.set_offsets(self._safe_offsets(urgent_pts))
 
-        # cierres
-        closed = snap.get("closed_edges", [])
-        segs = [[u, v] for (u, v) in closed]
-        self.closed_lc.set_segments(segs)
+        # cierres dinámicos (como cuadrados naranjas = obras)
+        blocked_nodes = snap.get("blocked_nodes", [])
+        self._draw_road_closures(blocked_nodes)
 
         # zonas
         self._update_zone_legend(snap)
@@ -365,19 +456,29 @@ class Visualizer:
             x, y = r["pos"]
             self.rider_scatters[i].set_offsets([[x, y]])
 
+            name = r.get("name", f"R{r['id']}")
             carrying = r.get("carrying", None)
             if carrying is None:
-                lab = f"R{r['id']}"
+                lab = name
             elif isinstance(carrying, list):
-                lab = f"R{r['id']}→{','.join(map(str, carrying))}"
+                lab = f"{name}>{','.join(map(str, carrying))}"
             else:
-                lab = f"R{r['id']}→{carrying}"
+                lab = f"{name}>{carrying}"
 
-            self.rider_labels[i].set_position((x + 0.12, y + 0.12))
+            self.rider_labels[i].set_position((x + 0.25, y + 0.25))
             self.rider_labels[i].set_text(lab)
 
             route = r.get("route", [])[: self.route_draw_limit]
             path = [r["pos"]] + route
+
+            picked = r.get("picked", False)
+            has_orders = len(r.get("assigned", [])) > 0
+            if picked and not has_orders:
+                route_color = "#e74c3c"  # Volviendo
+            else:
+                route_color = "#1f77b4"
+            self.route_lines[i].set_color(route_color)
+
             if len(path) >= 2:
                 xs = [p[0] for p in path]
                 ys = [p[1] for p in path]
@@ -385,10 +486,11 @@ class Visualizer:
             else:
                 self.route_lines[i].set_data([], [])
 
-        # stats panel cada N ticks
         if (t - self._last_stats_t) >= self.stats_every:
             self._update_stats_panel(snap)
             self._last_stats_t = t
+
+        self._update_rider_app(snap)
 
         if done:
             plt.close(self.fig)
@@ -401,7 +503,7 @@ class Visualizer:
             self._update,
             interval=self.interval_ms,
             blit=False,
-            cache_frame_data=False
+            cache_frame_data=False,
         )
         self._update(0)
         plt.show()
