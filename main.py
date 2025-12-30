@@ -45,7 +45,7 @@ def parse_args():
     p.add_argument("--max_eta", type=int, default=80)
     p.add_argument("--block_size", type=int, default=6)
     p.add_argument("--street_width", type=int, default=2)
-    p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--seed", type=int, default=14)
     p.add_argument("--interval_ms", type=int, default=240)
     return p.parse_args()
 

@@ -82,17 +82,16 @@ class Visualizer:
         self.ax.set_aspect("equal")
 
         # Fondo + grid
-        self.ax.set_facecolor("#f5f5f5")
+        self.ax.set_facecolor("#d3d3d3")  # gris claro para carretera
         self.ax.set_xticks(range(self.W))
         self.ax.set_yticks(range(self.H))
-        self.ax.grid(True, linewidth=1.0, alpha=0.10)
+        self.ax.grid(False)
         self.ax.set_xticklabels([])
         self.ax.set_yticklabels([])
         self.ax.tick_params(length=0)
 
         # Estático
         self._draw_buildings()
-        self._draw_avenues()
 
         # Cierres (rojo)
         self.closed_lc = LineCollection([], linewidths=3.0, alpha=0.9, colors="#d62728")
@@ -109,8 +108,10 @@ class Visualizer:
 
         # Capas dinámicas
         self.shop = self.ax.scatter([], [], s=320, marker="s", color="#ff7f0e")
-        self.orders_normal = self.ax.scatter([], [], s=90, marker="o", color="#2ca02c")
-        self.orders_urgent = self.ax.scatter([], [], s=160, marker="o", color="#d62728")
+        # Pedidos normales: círculos verdes translúcidos con reborde
+        self.orders_normal = self.ax.scatter([], [], s=90, marker="o", facecolor="#2ca02c", edgecolor="#145a32", alpha=0.55, linewidths=1.5)
+        # Pedidos urgentes: estrellas rojas
+        self.orders_urgent = self.ax.scatter([], [], s=160, marker="*", facecolor="#d62728", edgecolor="#7b241c", alpha=0.85, linewidths=1.8)
 
         self.rider_scatters = []
         self.route_lines = []
@@ -158,8 +159,16 @@ class Visualizer:
     def _draw_buildings(self):
         for (x, y) in self.buildings:
             rect = Rectangle((x - 0.5, y - 0.5), 1, 1, linewidth=0,
-                             facecolor="#273043", alpha=0.35)
+                             facecolor="#1a237e", alpha=0.55)  # azul oscuro para edificios
             self.ax.add_patch(rect)
+            # Dibujar bordes grises oscuros en los lados ortogonales
+            for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
+                nx, ny = x + dx, y + dy
+                if (nx, ny) not in self.buildings:
+                    # Línea en el borde, continua, azul oscuro y más fina
+                    x0, y0 = x + 0.5 * dx, y + 0.5 * dy
+                    x1, y1 = x + 0.5 * dx + 0.5 * (1-dx*dx), y + 0.5 * dy + 0.5 * (1-dy*dy)
+                    self.ax.plot([x0, x1], [y0, y1], color="#0d1a4a", linewidth=1.1, alpha=0.95, zorder=5, linestyle="solid")
 
     def _draw_road_closures(self, blocked_nodes):
         """Dibuja los cierres de calle como cuadrados naranjas (obras)."""
@@ -177,35 +186,19 @@ class Visualizer:
                 self.ax.add_patch(rect)
                 self._closure_patches.append(rect)
 
-    def _draw_avenues(self):
-        W, H = self.W, self.H
-        for av in self.avenues:
-            m = av.get("m", 1.0)
-            b = av.get("b", 0.0)
-
-            xs, ys = [], []
-            for x in range(W):
-                y = m * x + b
-                if 0 <= y <= H - 1:
-                    xs.append(x)
-                    ys.append(y)
-
-            if len(xs) >= 2:
-                self.ax.plot(xs, ys, linewidth=3.5, alpha=0.10, color="#666666")
-
     def _build_main_legend(self):
         handles = [
             Line2D([0], [0], marker="s", linestyle="None", markersize=11,
                    markerfacecolor="#ff7f0e", markeredgecolor="none", label="Restaurante"),
-            Line2D([0], [0], marker="o", linestyle="None", markersize=8,
-                   markerfacecolor="#2ca02c", markeredgecolor="none", label="Pedido (normal)"),
             Line2D([0], [0], marker="o", linestyle="None", markersize=10,
-                   markerfacecolor="#d62728", markeredgecolor="none", label="Pedido (urgente)"),
+                   markerfacecolor="#2ca02c", markeredgecolor="#145a32", alpha=0.55, label="Pedido (normal)"),
+            Line2D([0], [0], marker="*", linestyle="None", markersize=13,
+                   markerfacecolor="#d62728", markeredgecolor="#7b241c", alpha=0.85, label="Pedido (urgente)"),
             Line2D([0], [0], marker="D", linestyle="None", markersize=10,
                    markerfacecolor="#1f77b4", markeredgecolor="white", label="Repartidor"),
-            Line2D([0], [0], linewidth=2, color="#1f77b4", linestyle="--", label="Ruta (entregando)"),
-            Line2D([0], [0], linewidth=2, color="#e74c3c", linestyle="--", label="Ruta (volviendo)"),
-            Line2D([0], [0], linewidth=3, color="#d62728", label="Calle cortada"),
+            Line2D([0], [0], linewidth=1.2, color="#1f77b4", linestyle="--", label="Ruta (entregando)"),
+            Line2D([0], [0], linewidth=1.2, color="#e74c3c", linestyle="--", label="Ruta (volviendo)"),
+            Rectangle((0, 0), 1, 1, facecolor="#e74c3c", edgecolor="#c0392b", alpha=0.7, label="Calle cortada"),
             Rectangle((0, 0), 1, 1, facecolor="#273043", alpha=0.35, label="Edificio / manzana"),
         ]
         return self.ax.legend(
@@ -384,25 +377,25 @@ class Visualizer:
             lines.append(f"+------------------+")
             
             if resting:
-                lines.append(f"| [ZZZ] Descansando |")
+                lines.append(f"| [ZZZ] Descansando|")
                 lines.append(f"+------------------+")
                 lines.append("")
                 continue
             
             if not assigned_ids:
-                lines.append(f"| [OK] Sin pedidos  |")
-                lines.append(f"|    Esperando...   |")
+                lines.append(f"| [OK] Sin pedidos |")
+                lines.append(f"|    Esperando...  |")
                 lines.append(f"+------------------+")
                 lines.append("")
                 continue
             
             # Mostrar hacia dónde va
             if picked and not assigned_ids:
-                lines.append(f"| >> Volviendo      |")
+                lines.append(f"| >> Volviendo     |")
             elif not picked:
-                lines.append(f"| >> Recogiendo...  |")
+                lines.append(f"| >> Recogiendo... |")
             else:
-                lines.append(f"| >> Entregando     |")
+                lines.append(f"| >> Entregando    |")
             
             for oid in assigned_ids:
                 o = orders_by_id.get(oid)
@@ -420,12 +413,12 @@ class Visualizer:
                 # Indicar si es el pedido actual
                 current = ">>" if carrying == oid else "  "
                 
-                lines.append(f"|{current}{prio_txt} Pedido {oid:<3}   |")
-                lines.append(f"|    Dest: ({dropoff[0]:2},{dropoff[1]:2})   |")
+                lines.append(f"|{current}{prio_txt} Pedido {oid:<3}  |")
+                lines.append(f"|    Dest: ({dropoff[0]:2},{dropoff[1]:2}) |")
                 if tiempo_rest > 0:
-                    lines.append(f"|    Tiempo: {tiempo_rest:3}t    |")
+                    lines.append(f"|    Tiempo: {tiempo_rest:3}t  |")
                 else:
-                    lines.append(f"|    !! TARDE !!    |")
+                    lines.append(f"|    !! TARDE !!   |")
                 lines.append(f"+------------------+")
             
             lines.append("")
@@ -440,7 +433,7 @@ class Visualizer:
             # Marcador de diamante para representar la moto
             sc = self.ax.scatter([], [], s=120, marker="D", color="#1f77b4", edgecolors="white", linewidths=1.2, zorder=10)
             self.rider_scatters.append(sc)
-            (ln,) = self.ax.plot([], [], linewidth=2, color="#1f77b4", linestyle="--")
+            (ln,) = self.ax.plot([], [], linewidth=1.2, color="#1f77b4", linestyle="--")
             self.route_lines.append(ln)
             txt = self.ax.text(0, 0, "", fontsize=8, ha="left", va="bottom", fontweight="bold")
             self.rider_labels.append(txt)
@@ -473,7 +466,7 @@ class Visualizer:
 
         time_str = ticks_to_time(t, self.episode_len)
         self.hud.set_text(
-            f"🕐 {time_str}   pending={len(orders)}   riders={len(riders)}   traffic={traffic}   closures={closures}   blocked={blocked}"
+            f"Hora: {time_str}   pending={len(orders)}   riders={len(riders)}   traffic={traffic}   closures={closures}   blocked={blocked}"
         )
 
         # restaurante
@@ -483,7 +476,10 @@ class Visualizer:
         # pedidos
         normal_pts, urgent_pts = [], []
         for (loc, priority, *_rest) in orders:
-            (urgent_pts if priority > 1 else normal_pts).append([loc[0], loc[1]])
+            if priority > 1:
+                urgent_pts.append([loc[0], loc[1]])
+            else:
+                normal_pts.append([loc[0], loc[1]])
         self.orders_normal.set_offsets(self._safe_offsets(normal_pts))
         self.orders_urgent.set_offsets(self._safe_offsets(urgent_pts))
 
