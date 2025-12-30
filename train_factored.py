@@ -31,6 +31,12 @@ def train(
     # Convergencia
     delta_threshold: float = 0.01,  # Umbral de delta Q para convergencia
     patience: int = 30,  # Episodios consecutivos bajo umbral para parar
+    # Hiperparámetros Q-Learning
+    alpha: float = 0.1,
+    gamma: float = 0.95,
+    eps_start: float = 1.0,
+    eps_decay: float = 0.995,
+    eps_min: float = 0.05,
 ):
     os.makedirs(out_dir, exist_ok=True)
 
@@ -55,9 +61,15 @@ def train(
         enable_internal_traffic=True,
     )
 
-    # Agente factorizado
+    # Agente factorizado con hiperparámetros personalizables
     agent = FactoredQAgent(
-        cfg=FactoredQConfig(),
+        cfg=FactoredQConfig(
+            alpha=alpha,
+            gamma=gamma,
+            eps_start=eps_start,
+            eps_decay=eps_decay,
+            eps_min=eps_min,
+        ),
         encoder=FactoredStateEncoder(episode_len=episode_len),
         seed=base_seed,
     )
@@ -324,6 +336,12 @@ if __name__ == "__main__":
         action="store_true",
         help=f"Modo rápido: {FAST_EPISODES} episodios de {FAST_MAX_TICKS} ticks para smoke test",
     )
+    # Hiperparámetros Q-Learning
+    parser.add_argument("--alpha", type=float, default=0.1, help="Learning rate")
+    parser.add_argument("--gamma", type=float, default=0.95, help="Discount factor")
+    parser.add_argument("--eps-start", type=float, default=1.0, help="Initial epsilon")
+    parser.add_argument("--eps-decay", type=float, default=0.995, help="Epsilon decay rate")
+    parser.add_argument("--eps-min", type=float, default=0.05, help="Minimum epsilon")
     args = parser.parse_args()
 
     train(
@@ -335,4 +353,9 @@ if __name__ == "__main__":
         fast=args.fast,
         delta_threshold=args.delta,
         patience=args.patience,
+        alpha=args.alpha,
+        gamma=args.gamma,
+        eps_start=args.eps_start,
+        eps_decay=args.eps_decay,
+        eps_min=args.eps_min,
     )
