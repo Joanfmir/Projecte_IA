@@ -34,6 +34,9 @@ class Rider:
     # Fatiga avanzada
     resting: bool = False  # si está descansando (bloquea movimiento)
 
+    # Batching: ticks que esperará en restaurante antes de salir (0 = sin espera)
+    wait_until: int = 0
+
     def can_take_more(self) -> bool:
         return len(self.assigned_order_ids) < self.capacity
 
@@ -65,4 +68,13 @@ class FleetManager:
     def get_available_riders(self) -> List[Rider]:
         # “available” aquí significa “puede recibir asignación”
         # (si está descansando, NO queremos asignarle más)
-        return [r for r in self._riders if r.available and (not r.resting)]
+        result: List[Rider] = []
+        for r in self._riders:
+            if r.resting:
+                continue
+            if r.available:
+                result.append(r)
+                continue
+            if r.wait_until > 0 and r.can_take_more():
+                result.append(r)
+        return result
