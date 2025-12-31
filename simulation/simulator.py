@@ -409,6 +409,30 @@ class Simulator:
             else:
                 self.traffic_level = "high"
 
+    def _replan_all_riders_if_blocked(self) -> None:
+        """Recalcula las rutas de riders cuyo camino pasa por aristas cerradas."""
+        for r in self.fm.get_all():
+            if not r.route:
+                continue
+            
+            # Verificar si la ruta pasa por alguna arista cerrada
+            current_pos = r.position
+            route_blocked = False
+            for next_pos in r.route:
+                edge = (current_pos, next_pos)
+                edge_info = self.graph.edges.get(edge)
+                if edge_info and edge_info.closed:
+                    route_blocked = True
+                    break
+                current_pos = next_pos
+            
+            # Si está bloqueada, recalcular ruta
+            if route_blocked:
+                tgt = r.current_target()
+                if tgt:
+                    path, _ = self.planner.astar(r.position, tgt)
+                    r.route = path[1:] if path else []
+
     def maybe_spawn_closure(self) -> None:
         """Genera cierres de calles aleatorios según road_closure_prob."""
         if self.cfg.road_closure_prob <= 0:
@@ -418,6 +442,8 @@ class Simulator:
             current = self.graph.count_closed_directed()
             if current < 20:  # 10 cierres * 2 (bidireccional)
                 self.graph.random_road_incidents(self.cfg.road_closures_per_event)
+                # Replanificar rutas de todos los riders con rutas activas
+                self._replan_all_riders_if_blocked()
 
     # -------------------
     # Movimiento + FATIGA
@@ -474,13 +500,32 @@ class Simulator:
             if r.assigned_order_ids and not r.waypoints:
                 self._rebuild_plan_for_rider(r)
 
-            # mover 1 casilla
+            # mover 1 casilla (verificar primero si el camino está cerrado)
             if r.route:
-                nxt = r.route.pop(0)
-                r.position = nxt
-                r.distance_travelled += 1.0
-                distance_moved += 1.0
-                r.fatigue += FAT_MOVE_INC  # ✅ sube al moverse
+                nxt = r.route[0]
+                edge = (r.position, nxt)
+                edge_info = self.graph.edges.get(edge)
+                
+                # Si la arista está cerrada, recalcular ruta
+                if edge_info and edge_info.closed:
+                    tgt = r.current_target()
+                    if tgt:
+                        path, _ = self.planner.astar(r.position, tgt)
+                        r.route = path[1:] if path else []
+                    # Si aún hay ruta después de recalcular, tomar el siguiente paso
+                    if r.route:
+                        nxt = r.route.pop(0)
+                        r.position = nxt
+                        r.distance_travelled += 1.0
+                        distance_moved += 1.0
+                        r.fatigue += FAT_MOVE_INC
+                else:
+                    # Arista abierta, mover normalmente
+                    r.route.pop(0)
+                    r.position = nxt
+                    r.distance_travelled += 1.0
+                    distance_moved += 1.0
+                    r.fatigue += FAT_MOVE_INC  # ✅ sube al moverse
 
             tgt = r.current_target()
             if tgt is None:

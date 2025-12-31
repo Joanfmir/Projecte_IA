@@ -1,7 +1,18 @@
 from __future__ import annotations
 
+import sys
 import matplotlib
-matplotlib.use('TkAgg')  # Backend interactivo para animaciones en Windows
+
+# Seleccionar backend según el sistema operativo
+if sys.platform.startswith('win'):
+    matplotlib.use('TkAgg')  # Windows
+elif sys.platform.startswith('linux'):
+    try:
+        matplotlib.use('TkAgg')  # Linux con Tk instalado
+    except Exception:
+        matplotlib.use('Agg')  # Fallback sin GUI
+elif sys.platform == 'darwin':
+    matplotlib.use('MacOSX')  # macOS
 
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
@@ -85,8 +96,8 @@ class Visualizer:
         # Estático
         self._draw_buildings()
 
-        # Cierres (rojo)
-        self.closed_lc = LineCollection([], linewidths=3.0, alpha=0.9, colors="#d62728")
+        # Cierres de calles (líneas rojas gruesas)
+        self.closed_lc = LineCollection([], linewidths=6.0, alpha=0.95, colors="#e74c3c", zorder=15)
         self.ax.add_collection(self.closed_lc)
 
         self.ax.set_title("Pizza Delivery IA", fontsize=18, pad=8)
@@ -439,6 +450,18 @@ class Visualizer:
         # cierres dinámicos (como cuadrados naranjas = obras)
         blocked_nodes = snap.get("blocked_nodes", [])
         self._draw_road_closures(blocked_nodes)
+
+        # cierres de aristas (líneas rojas)
+        closed_edges = snap.get("closed_edges", [])
+        if closed_edges:
+            segments = []
+            for edge in closed_edges:
+                if len(edge) == 2:
+                    (x1, y1), (x2, y2) = edge
+                    segments.append([(x1, y1), (x2, y2)])
+            self.closed_lc.set_segments(segments)
+        else:
+            self.closed_lc.set_segments([])
 
         # zonas
         self._update_zone_legend(snap)

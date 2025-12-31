@@ -144,8 +144,11 @@ class RoadGraph:
             self.close_edge(a, b)
 
     def close_edge(self, a: Node, b: Node) -> None:
+        """Cierra la arista en ambas direcciones (bidireccional)."""
         if (a, b) in self.edges:
             self.edges[(a, b)].closed = True
+        if (b, a) in self.edges:
+            self.edges[(b, a)].closed = True
 
     def open_edge(self, a: Node, b: Node) -> None:
         if (a, b) in self.edges:

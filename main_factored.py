@@ -53,7 +53,7 @@ def parse_args():
     p.add_argument("--max_eta", type=int, default=80)
     p.add_argument("--block_size", type=int, default=6)
     p.add_argument("--street_width", type=int, default=2)
-    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--seed", type=int, default=7)
 
     # Visual
     p.add_argument(
