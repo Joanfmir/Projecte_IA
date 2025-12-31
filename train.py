@@ -22,7 +22,7 @@ ACTIONS = [A_ASSIGN_URGENT_NEAREST, A_ASSIGN_ANY_NEAREST, A_WAIT, A_REPLAN_TRAFF
 def train(*args, **kwargs):
     """Wrapper deprecado que llama a train_factored.train."""
     warnings.warn(
-        "train.py es legacy; usa train_factored.train o ejecuta train_factored.py",
+        "train.py es legacy; usa el flujo factorizado (train_factored.py)",
         DeprecationWarning,
         stacklevel=2,
     )

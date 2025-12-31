@@ -21,7 +21,7 @@ ACTIONS = [A_ASSIGN_URGENT_NEAREST, A_ASSIGN_ANY_NEAREST, A_WAIT, A_REPLAN_TRAFF
 
 def eval_all(
     n_episodes: int = 20,
-    q_path: str = "artifacts/qtable_factored.pkl",
+    q_path: str = "artifacts/qtable.pkl",
     base_seed: int = 7,
 ):
     """

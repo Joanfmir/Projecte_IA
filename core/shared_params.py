@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Tuple
 
+State = Tuple[int, int, int, int, int, int, int, int]  # bins legacy
+
 # Acciones disponibles (consumidas por simulador, agentes y tests)
 A_ASSIGN_URGENT_NEAREST = 0
 A_ASSIGN_ANY_NEAREST = 1
@@ -133,7 +135,7 @@ def make_state(
     std_deliveries: float,
     traffic_level: str,
     closures: int,
-) -> Tuple[int, ...]:
+) -> State:
     """Construye el estado discretizado legacy usado por el simulador."""
     return (
         bin_time(t, episode_len),
@@ -163,4 +165,5 @@ __all__ = [
     "bin_traffic",
     "bin_closures",
     "make_state",
+    "State",
 ]
