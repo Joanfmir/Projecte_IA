@@ -58,8 +58,6 @@ def ticks_to_time(t: int, episode_len: int) -> str:
 
     return f"{hours:02d}:{mins:02d}"
 
-
-class Visualizer:
 class Visualizer:
     """Visualizador optimizado y robusto para la simulación.
 
