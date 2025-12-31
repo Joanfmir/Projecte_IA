@@ -396,15 +396,18 @@ class Visualizer:
 
     def _update(self, _frame):
         # acción
-        if self.policy is not None:
-            snap0 = self.sim.snapshot()
-            if hasattr(self.policy, "choose_action_snapshot"):
-                a = self.policy.choose_action_snapshot(snap0)
-            else:
-                s = self.sim.compute_state()
-                a = self.policy.choose_action(s)
-        else:
-            a = A_ASSIGN_ANY_NEAREST
+        if self.policy is None:
+            raise TypeError(
+                "Policy must implement choose_action_snapshot(snapshot). "
+                "Supported modes: FactoredQAgent or HeuristicPolicy."
+            )
+        snap0 = self.sim.snapshot()
+        if not hasattr(self.policy, "choose_action_snapshot"):
+            raise TypeError(
+                "Policy must implement choose_action_snapshot(snapshot). "
+                "Supported modes: FactoredQAgent or HeuristicPolicy."
+            )
+        a = self.policy.choose_action_snapshot(snap0)
 
         _, done = self.sim.step(a)
 

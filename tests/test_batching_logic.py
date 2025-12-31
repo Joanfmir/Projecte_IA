@@ -117,3 +117,18 @@ def test_wait_updates_q_value_on_backlog():
     # Asume recompensa negativa por penalización de pedidos urgentes sin asignar;
     # si la estructura de recompensas cambia, actualizar esta aserción.
     assert q_wait < 0
+
+
+def test_simulator_has_no_compute_state():
+    cfg = SimConfig(
+        width=6,
+        height=6,
+        n_riders=1,
+        episode_len=10,
+        order_spawn_prob=0.0,
+        enable_internal_spawn=False,
+        enable_internal_traffic=False,
+        seed=1,
+    )
+    sim = Simulator(cfg)
+    assert not hasattr(sim, "compute_state")
