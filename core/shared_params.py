@@ -9,7 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Tuple
 
-State = Tuple[int, int, int, int, int, int, int, int]  # bins legacy
+State = Tuple[
+    int, int, int, int, int, int, int, int
+]  # Legacy discretized state: time, pending, urgent_ratio, free_riders, fatigue, imbalance, traffic, closures
 
 # Available actions (consumed by simulator, agents, and tests)
 A_ASSIGN_URGENT_NEAREST = 0
@@ -38,7 +40,7 @@ class QLearningConfig:
 
 
 # -----------------------------
-# Discretización del estado
+# State discretization
 # -----------------------------
 
 

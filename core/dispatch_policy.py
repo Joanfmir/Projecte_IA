@@ -28,9 +28,9 @@ Action = int
 
 class DispatchPolicy:
     """
-    Política RL (Q-learning tabular) legacy. ⚠️ Deprecated.
+    Legacy tabular Q-learning policy. ⚠️ Deprecated.
 
-    Se mantiene como shim para compatibilidad; use FactoredQAgent.
+    Kept only as a compatibility shim; prefer FactoredQAgent.
     """
 
     def __init__(self, cfg: QLearningConfig, seed: int = 123):
