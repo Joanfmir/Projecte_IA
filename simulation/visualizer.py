@@ -1,0 +1,570 @@
+# simulation/visualizer.py
+"""Visualizador de la simulación utilizando Matplotlib.
+
+Este módulo provee la clase `Visualizer`, encargada de renderizar el estado
+de la simulación (mapa, riders, pedidos, tráfico) en tiempo real o para exportar.
+"""
+from __future__ import annotations
+
+import sys
+import matplotlib
+
+# Seleccionar backend según el sistema operativo
+if sys.platform.startswith('win'):
+    matplotlib.use('TkAgg')  # Windows
+elif sys.platform.startswith('linux'):
+    try:
+        matplotlib.use('TkAgg')  # Linux con Tk instalado
+    except Exception:
+        matplotlib.use('Agg')  # Fallback sin GUI
+elif sys.platform == 'darwin':
+    matplotlib.use('MacOSX')  # macOS
+
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from matplotlib.patches import Rectangle, Patch
+from matplotlib.lines import Line2D
+from matplotlib.collections import LineCollection
+
+from core.shared_params import A_ASSIGN_ANY_NEAREST
+
+
+def ticks_to_time(t: int, episode_len: int) -> str:
+    """Convierte ticks de simulación a formato hora HH:MM.
+
+    Asume que el episodio dura 5 horas (19:00 a 00:00).
+
+    Args:
+        t: Tick actual.
+        episode_len: Duración total del episodio en ticks.
+
+    Returns:
+        String con la hora formateada (e.g., "21:30").
+    """
+    total_minutes = 300  # 5 horas (19:00 a 00:00)
+    minutes_elapsed = (t / episode_len) * total_minutes
+
+    start_hour = 19
+    start_minutes = start_hour * 60  # 19:00 = 1140 minutos desde medianoche
+
+    current_minutes = start_minutes + minutes_elapsed
+
+    # Si pasa de medianoche (1440 minutos)
+    if current_minutes >= 1440:
+        current_minutes -= 1440
+
+    hours = int(current_minutes // 60)
+    mins = int(current_minutes % 60)
+
+    return f"{hours:02d}:{mins:02d}"
+
+class Visualizer:
+    """Visualizador optimizado y robusto para la simulación.
+
+    Características:
+    - No recrea objetos por frame para evitar ralentización (usa `set_data`, `set_offsets`).
+    - Actualización de estadísticas cada N ticks.
+    - Recorte de rutas visualizadas.
+    - Soporte para visualización de tráfico por zonas.
+
+    Attributes:
+        sim: Instancia del simulador (`Simulator`).
+        policy: Política (opcional) que controla al agente.
+    """
+
+    def __init__(
+        self,
+        sim,
+        policy=None,
+        interval_ms: int = 220,
+        stats_every: int = 5,
+        route_draw_limit: int = 40,
+    ):
+        self.sim = sim
+        self.policy = policy
+        self.interval_ms = interval_ms
+        self.stats_every = max(1, int(stats_every))
+        self.route_draw_limit = max(5, int(route_draw_limit))
+        self.episode_len = sim.cfg.episode_len
+
+        snap = self.sim.snapshot()
+        self.W = snap["width"]
+        self.H = snap["height"]
+        self.buildings = set(tuple(x) for x in snap.get("buildings", []))
+        self.avenues = snap.get("avenues", [])
+
+        # FIG / AX principal
+        self.fig, self.ax = plt.subplots(figsize=(12, 8))  # Tamaño ventana normal
+        self.fig.subplots_adjust(top=0.88, right=0.78)
+
+        self.ax.set_xlim(-0.5, self.W - 0.5)
+        self.ax.set_ylim(-0.5, self.H - 0.5)
+        self.ax.set_aspect("equal")
+
+        # Fondo + grid
+        self.ax.set_facecolor("#d3d3d3")  # gris claro para carretera
+        self.ax.set_xticks(range(self.W))
+        self.ax.set_yticks(range(self.H))
+        self.ax.grid(False)
+        self.ax.set_xticklabels([])
+        self.ax.set_yticklabels([])
+        self.ax.tick_params(length=0)
+
+        # Estático
+        self._draw_buildings()
+
+        # Cierres de calles (líneas rojas gruesas)
+        self.closed_lc = LineCollection([], linewidths=6.0, alpha=0.95, colors="#e74c3c", zorder=15)
+        self.ax.add_collection(self.closed_lc)
+
+        self.ax.set_title("Pizza Delivery IA", fontsize=18, pad=8)
+
+        # HUD
+        self.hud = self.fig.text(
+            0.02,
+            0.96,
+            "",
+            fontsize=11,
+            ha="left",
+            va="top",
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="white", alpha=0.75, edgecolor="none"),
+        )
+
+        # Capas dinámicas
+        self.shop = self.ax.scatter([], [], s=320, marker="s", color="#ff7f0e")
+        # Pedidos normales: círculos verdes translúcidos con reborde
+        self.orders_normal = self.ax.scatter(
+            [], [], s=90, marker="o", facecolor="#2ca02c", edgecolor="#145a32", alpha=0.55, linewidths=1.5
+        )
+        # Pedidos urgentes: estrellas rojas
+        self.orders_urgent = self.ax.scatter(
+            [], [], s=160, marker="*", facecolor="#d62728", edgecolor="#7b241c", alpha=0.85, linewidths=1.8
+        )
+
+        self.rider_scatters = []
+        self.route_lines = []
+        self.rider_labels = []
+
+        # Leyendas (1 vez)
+        self.legend_main = self._build_main_legend()
+        self.ax.add_artist(self.legend_main)
+
+        self.zone_patches, self.zone_legend, self.zone_texts = self._build_zone_legend()
+        self.ax.add_artist(self.zone_legend)
+        self._draw_zone_labels()
+
+        # Panel stats a la izquierda
+        self.ax_stats = self.fig.add_axes([0.02, 0.06, 0.23, 0.40])
+        self.ax_stats.axis("off")
+        self.ax_stats.set_title("Stats (tiempo real)", fontsize=12)
+        self.stats_text = self.ax_stats.text(0.0, 1.0, "", va="top", ha="left", fontsize=9, family="monospace")
+
+        # Panel "App del Rider" a la derecha (más arriba)
+        self.ax_rider_app = self.fig.add_axes([0.82, 0.15, 0.17, 0.45])
+        self.ax_rider_app.axis("off")
+        self.ax_rider_app.set_title("App Riders", fontsize=11, fontweight="bold")
+        self.rider_app_text = self.ax_rider_app.text(
+            0.0, 1.0, "", va="top", ha="left", fontsize=8, family="monospace"
+        )
+
+        # init
+        self._update_zone_legend(snap)
+        self._update_stats_panel(snap)
+        self._update_rider_app(snap)
+        self._last_stats_t = -10**9
+
+    # -------------------------
+    # Estático
+    # -------------------------
+    # -------------------------
+    # Estático
+    # -------------------------
+    def _draw_buildings(self):
+        """Dibuja los edificios como rectángulos y contornos."""
+        for (x, y) in self.buildings:
+            rect = Rectangle((x - 0.5, y - 0.5), 1, 1, linewidth=0, facecolor="#1a237e", alpha=0.55)
+            self.ax.add_patch(rect)
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nx, ny = x + dx, y + dy
+                if (nx, ny) not in self.buildings:
+                    x0, y0 = x + 0.5 * dx, y + 0.5 * dy
+                    x1, y1 = x + 0.5 * dx + 0.5 * (1 - dx * dx), y + 0.5 * dy + 0.5 * (1 - dy * dy)
+                    self.ax.plot([x0, x1], [y0, y1], color="#0d1a4a", linewidth=1.1, alpha=0.95, zorder=5, linestyle="solid")
+
+    def _draw_road_closures(self, blocked_nodes):
+        """Dibuja los cierres de calle como cuadrados naranjas (obras)."""
+        if hasattr(self, "_closure_patches"):
+            for p in self._closure_patches:
+                p.remove()
+        self._closure_patches = []
+
+        for node in blocked_nodes:
+            if isinstance(node, (list, tuple)) and len(node) == 2:
+                x, y = node
+                rect = Rectangle((x - 0.5, y - 0.5), 1, 1, linewidth=1, facecolor="#e74c3c", edgecolor="#c0392b", alpha=0.7)
+                self.ax.add_patch(rect)
+                self._closure_patches.append(rect)
+
+    def _build_main_legend(self):
+        """Construye la leyenda principal con los símbolos del mapa."""
+        handles = [
+            Line2D([0], [0], marker="s", linestyle="None", markersize=11, markerfacecolor="#ff7f0e", markeredgecolor="none", label="Restaurante"),
+            Line2D([0], [0], marker="o", linestyle="None", markersize=10, markerfacecolor="#2ca02c", markeredgecolor="#145a32", alpha=0.55, label="Pedido (normal)"),
+            Line2D([0], [0], marker="*", linestyle="None", markersize=13, markerfacecolor="#d62728", markeredgecolor="#7b241c", alpha=0.85, label="Pedido (urgente)"),
+            Line2D([0], [0], marker="D", linestyle="None", markersize=10, markerfacecolor="#1f77b4", markeredgecolor="white", label="Repartidor"),
+            Line2D([0], [0], linewidth=1.2, color="#1f77b4", linestyle="--", label="Ruta (entregando)"),
+            Line2D([0], [0], linewidth=1.2, color="#e74c3c", linestyle="--", label="Ruta (volviendo)"),
+            Rectangle((0, 0), 1, 1, facecolor="#e74c3c", edgecolor="#c0392b", alpha=0.7, label="Calle cortada"),
+            Rectangle((0, 0), 1, 1, facecolor="#273043", alpha=0.35, label="Edificio / manzana"),
+        ]
+        return self.ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=True, title="Leyenda", borderaxespad=0.0)
+
+    def _build_zone_legend(self):
+        """Construye la leyenda de zonas de tráfico."""
+        patches = [
+            Patch(facecolor="#cfe8ff", edgecolor="none", label="Z0 (TL): ?"),
+            Patch(facecolor="#d7ffd7", edgecolor="none", label="Z1 (TR): ?"),
+            Patch(facecolor="#fff2cc", edgecolor="none", label="Z2 (BL): ?"),
+            Patch(facecolor="#ffd6d6", edgecolor="none", label="Z3 (BR): ?"),
+        ]
+        leg = self.ax.legend(handles=patches, loc="upper left", bbox_to_anchor=(1.01, 0.55), frameon=True, title="Tráfico por zonas", borderaxespad=0.0)
+        return patches, leg, leg.get_texts()
+
+    def _draw_zone_labels(self):
+        """Dibuja etiquetas de texto para identificar las 4 zonas (cuadrantes)."""
+        W, H = self.W, self.H
+        fs = 14
+        self.ax.text(W * 0.25, H * 0.75, "Z0 (TL)", fontsize=fs, weight="bold", ha="center", va="center", alpha=0.25)
+        self.ax.text(W * 0.75, H * 0.75, "Z1 (TR)", fontsize=fs, weight="bold", ha="center", va="center", alpha=0.25)
+        self.ax.text(W * 0.25, H * 0.25, "Z2 (BL)", fontsize=fs, weight="bold", ha="center", va="center", alpha=0.25)
+        self.ax.text(W * 0.75, H * 0.25, "Z3 (BR)", fontsize=fs, weight="bold", ha="center", va="center", alpha=0.25)
+
+    # -------------------------
+    # Tráfico por zonas (ROBUSTO)
+    # -------------------------
+    def _extract_zone_levels(self, snap: dict) -> dict:
+        """Extrae el nivel de tráfico por zona desde el snapshot.
+
+        Normaliza las claves del diccionario de zonas para soportar diferentes formatos
+        (enteros, strings). Si no hay datos de zona, usa tráfico global.
+
+        Args:
+            snap: Snapshot del simulador.
+
+        Returns:
+            Diccionario {zone_id: traffic_level_str}.
+        """
+        zones = None
+        for k in ("traffic_zones", "zone_traffic", "zone_levels", "zones_traffic"):
+            v = snap.get(k, None)
+            if isinstance(v, dict) and v:
+                zones = v
+                break
+
+        if zones is None:
+            v = snap.get("traffic_zones", None)
+            if isinstance(v, (list, tuple)) and len(v) == 4:
+                zones = {i: v[i] for i in range(4)}
+
+        if zones is None or not isinstance(zones, dict):
+            g = snap.get("traffic", snap.get("traffic_level", "mixed"))
+            zones = {0: g, 1: g, 2: g, 3: g}
+
+        out = {}
+        for i in range(4):
+            if i in zones:
+                out[i] = zones[i]
+            elif str(i) in zones:
+                out[i] = zones[str(i)]
+            else:
+                out[i] = snap.get("traffic", snap.get("traffic_level", "mixed"))
+        return out
+
+    def _update_zone_legend(self, snap: dict):
+        """Actualiza el texto de la leyenda de zonas con los niveles de tráfico actuales."""
+        zones = self._extract_zone_levels(snap)
+
+        def name(z: int) -> str:
+            return "TL" if z == 0 else "TR" if z == 1 else "BL" if z == 2 else "BR"
+
+        labels = [f"Z{z} ({name(z)}): {zones.get(z, '?')}" for z in (0, 1, 2, 3)]
+        for i in range(min(len(self.zone_texts), len(labels))):
+            self.zone_texts[i].set_text(labels[i])
+
+    # -------------------------
+    # Stats (barato)
+    # -------------------------
+    def _update_stats_panel(self, snap: dict):
+        """Actualiza el panel de texto con estadísticas en tiempo real."""
+        t = snap["t"]
+        riders = snap.get("riders", [])
+        orders_full = snap.get("orders_full", [])
+
+        time_str = ticks_to_time(t, self.episode_len)
+        lines = []
+        lines.append(f"Hora: {time_str}")
+        lines.append("")
+        lines.append("RIDERS")
+        lines.append("------")
+
+        for r in riders:
+            name = r.get("name", f"R{r['id']}")
+            x, y = r["pos"]
+
+            avail = r.get("available", True)
+            route_len = len(r.get("route", []))
+
+            carrying = r.get("carrying", None)
+            if carrying is None:
+                carry_txt = "-"
+            elif isinstance(carrying, list):
+                carry_txt = ",".join(map(str, carrying))
+            else:
+                carry_txt = str(carrying)
+
+            lines.append(f"{name:6s} pos=({x:2d},{y:2d}) av={int(avail)} carry={carry_txt:<5} route={route_len:3d}")
+
+        lines.append("")
+        lines.append("ORDERS (últimos 8)")
+        lines.append("-----------------")
+
+        def sort_key(o):
+            st = o.get("status", "pending")
+            pr = o.get("priority", 1)
+            st_rank = 0 if st in ("pending", "picked") else 1
+            created = o.get("created_at", 0) if o.get("created_at", None) is not None else 0
+            return (st_rank, -pr, -created)
+
+        top = sorted(orders_full, key=sort_key)[:8]
+        for o in top:
+            oid = o["id"]
+            pr = o.get("priority", 1)
+            st = o.get("status", "pending")
+            assigned = o.get("assigned_to", None)
+            created = o.get("created_at", None)
+            deadline = o.get("deadline", None)
+            delivered = o.get("delivered_at", None)
+
+            asg_txt = "-" if assigned is None else str(assigned)
+            since = "-" if created is None else str(t - created)
+            rem = "-" if deadline is None else str(deadline - t)
+            total = "-" if (created is None or delivered is None) else str(delivered - created)
+            delay = "-" if (delivered is None or deadline is None) else str(delivered - deadline)
+
+            lines.append(f"O{oid:02d} P{pr} st={st:<8} asg={asg_txt:<2} since={since:>3} rem={rem:>4} total={total:>3} dly={delay:>4}")
+
+        self.stats_text.set_text("\n".join(lines))
+
+    def _update_rider_app(self, snap: dict):
+        """Muestra la 'app' de cada rider con sus pedidos asignados."""
+        t = snap["t"]
+        riders = snap.get("riders", [])
+        orders_full = snap.get("orders_full", [])
+        restaurant = snap.get("restaurant", (0, 0))
+
+        orders_by_id = {o["id"]: o for o in orders_full}
+
+        lines = []
+        for r in riders:
+            name = r.get("name", f"R{r['id']}")
+            carrying = r.get("carrying", None)
+            assigned_ids = r.get("assigned", [])
+            resting = r.get("resting", False)
+            picked = r.get("picked", False)
+
+            lines.append(f"+------------------+")
+            lines.append(f"|  {name:^14s}  |")
+            lines.append(f"+------------------+")
+
+            if resting:
+                lines.append(f"| [ZZZ] Descansando|")
+                lines.append(f"+------------------+")
+                lines.append("")
+                continue
+
+            if not assigned_ids:
+                lines.append(f"| [OK] Sin pedidos |")
+                lines.append(f"|    Esperando...  |")
+                lines.append(f"+------------------+")
+                lines.append("")
+                continue
+
+            if picked and not assigned_ids:
+                lines.append(f"| >> Volviendo     |")
+            elif not picked:
+                lines.append(f"| >> Recogiendo... |")
+            else:
+                lines.append(f"| >> Entregando    |")
+
+            for oid in assigned_ids:
+                o = orders_by_id.get(oid)
+                if o is None:
+                    continue
+
+                dropoff = o.get("dropoff", (0, 0))
+                priority = o.get("priority", 1)
+                deadline = o.get("deadline", 0)
+                status = o.get("status", "pending")
+
+                tiempo_rest = deadline - t
+                prio_txt = "[!]" if priority > 1 else "   "
+
+                current = ">>" if carrying == oid else "  "
+
+                lines.append(f"|{current}{prio_txt} Pedido {oid:<3}  |")
+                lines.append(f"|    Dest: ({dropoff[0]:2},{dropoff[1]:2}) |")
+                if tiempo_rest > 0:
+                    lines.append(f"|    Tiempo: {tiempo_rest:3}t  |")
+                else:
+                    lines.append(f"|    !! TARDE !!   |")
+                lines.append(f"+------------------+")
+
+            lines.append("")
+
+        self.rider_app_text.set_text("\n".join(lines))
+
+    # -------------------------
+    # Dinámica
+    # -------------------------
+    def _ensure_riders(self, n: int):
+        """Asegura que existan N scatters para los riders en el plot."""
+        while len(self.rider_scatters) < n:
+            sc = self.ax.scatter([], [], s=120, marker="D", color="#1f77b4", edgecolors="white", linewidths=1.2, zorder=10)
+            self.rider_scatters.append(sc)
+            (ln,) = self.ax.plot([], [], linewidth=1.2, color="#1f77b4", linestyle="--")
+            self.route_lines.append(ln)
+            txt = self.ax.text(0, 0, "", fontsize=8, ha="left", va="bottom", fontweight="bold")
+            self.rider_labels.append(txt)
+
+    def _safe_offsets(self, pts):
+        """Devuelve offsets seguros para scatter (evita errores con listas vacías)."""
+        return pts if pts else [[-1000, -1000]]
+
+    def _update(self, _frame):
+        """Función de actualización llamada por FuncAnimation en cada frame.
+
+        1. Consulta la política para obtener la acción.
+        2. Ejecuta un paso del simulador (`sim.step(a)`).
+        3. Recoge el snapshot y actualiza los gráficos.
+        """
+        # acción
+        if self.policy is None:
+            raise TypeError(
+                "Policy must implement choose_action_snapshot(snapshot). "
+                "Supported modes: FactoredQAgent or HeuristicPolicy."
+            )
+        snap0 = self.sim.snapshot()
+        if not hasattr(self.policy, "choose_action_snapshot"):
+            raise TypeError(
+                "Policy must implement choose_action_snapshot(snapshot). "
+                "Supported modes: FactoredQAgent or HeuristicPolicy."
+            )
+        a = self.policy.choose_action_snapshot(snap0)
+
+        _, done = self.sim.step(a)
+
+        snap = self.sim.snapshot()
+        t = snap["t"]
+
+        orders = snap.get("pending_orders", [])
+        riders = snap.get("riders", [])
+        traffic = snap.get("traffic", "mixed")
+        closures = snap.get("closures", 0)
+        blocked = snap.get("blocked", 0)
+
+        time_str = ticks_to_time(t, self.episode_len)
+        self.hud.set_text(
+            f"Hora: {time_str}   pending={len(orders)}   riders={len(riders)}   traffic={traffic}   closures={closures}   blocked={blocked}"
+        )
+
+        # restaurante
+        sx, sy = snap["restaurant"]
+        self.shop.set_offsets([[sx, sy]])
+
+        # pedidos
+        normal_pts, urgent_pts = [], []
+        for (loc, priority, *_rest) in orders:
+            if priority > 1:
+                urgent_pts.append([loc[0], loc[1]])
+            else:
+                normal_pts.append([loc[0], loc[1]])
+        self.orders_normal.set_offsets(self._safe_offsets(normal_pts))
+        self.orders_urgent.set_offsets(self._safe_offsets(urgent_pts))
+
+        # cierres dinámicos (como cuadrados naranjas = obras)
+        blocked_nodes = snap.get("blocked_nodes", [])
+        self._draw_road_closures(blocked_nodes)
+
+        # cierres de aristas (líneas rojas)
+        closed_edges = snap.get("closed_edges", [])
+        if closed_edges:
+            segments = []
+            for edge in closed_edges:
+                if len(edge) == 2:
+                    (x1, y1), (x2, y2) = edge
+                    segments.append([(x1, y1), (x2, y2)])
+            self.closed_lc.set_segments(segments)
+        else:
+            self.closed_lc.set_segments([])
+
+        # zonas
+        self._update_zone_legend(snap)
+
+        # riders + rutas
+        self._ensure_riders(len(riders))
+        for i, r in enumerate(riders):
+            x, y = r["pos"]
+            self.rider_scatters[i].set_offsets([[x, y]])
+
+            name = r.get("name", f"R{r['id']}")
+            carrying = r.get("carrying", None)
+            if carrying is None:
+                lab = name
+            elif isinstance(carrying, list):
+                lab = f"{name}>{','.join(map(str, carrying))}"
+            else:
+                lab = f"{name}>{carrying}"
+
+            self.rider_labels[i].set_position((x + 0.25, y + 0.25))
+            self.rider_labels[i].set_text(lab)
+
+            route = r.get("route", [])[: self.route_draw_limit]
+            path = [r["pos"]] + route
+
+            picked = r.get("picked", False)
+            has_orders = len(r.get("assigned", [])) > 0
+            if picked and not has_orders:
+                route_color = "#e74c3c"  # Volviendo
+            else:
+                route_color = "#1f77b4"
+            self.route_lines[i].set_color(route_color)
+
+            if len(path) >= 2:
+                xs = [p[0] for p in path]
+                ys = [p[1] for p in path]
+                self.route_lines[i].set_data(xs, ys)
+            else:
+                self.route_lines[i].set_data([], [])
+
+        if (t - self._last_stats_t) >= self.stats_every:
+            self._update_stats_panel(snap)
+            self._last_stats_t = t
+
+        self._update_rider_app(snap)
+
+        if done:
+            plt.close(self.fig)
+
+        return []
+
+    def run(self):
+        """Inicia el bucle principal de visualización."""
+        self.ani = FuncAnimation(
+            self.fig,
+            self._update,
+            interval=self.interval_ms,
+            blit=False,
+            cache_frame_data=False,
+        )
+        self._update(0)
+        plt.show()
