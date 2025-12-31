@@ -1,7 +1,9 @@
 # core/factored_states.py
-"""
-Codificación de estados para Q-Learning factorizado.
-2 tipos de estado para 2 Q-tables: Q1 (asignación) y Q3 (incidente/tráfico).
+"""Codificación de estados para Q-Learning factorizado.
+
+Define el esquema de discretización (binning) y codificación de estados necesario
+para las dos tablas Q (Q1: Asignación, Q3: Incidente). Transforma los datos crudos
+de la simulación en tuplas de enteros manejables por el algoritmo de aprendizaje.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -17,7 +19,11 @@ Node = Tuple[int, int]
 
 
 def bin_time(t: int, episode_len: int) -> int:
-    """Progreso del episodio en 5 franjas (0-4)."""
+    """Discretiza el progreso del episodio en 5 tramos.
+    
+    Returns:
+        Entero 0-4 indicando el progreso (0-20%, 20-40%, etc.).
+    """
     frac = t / max(1, episode_len)
     if frac < 0.2:
         return 0
@@ -31,7 +37,7 @@ def bin_time(t: int, episode_len: int) -> int:
 
 
 def bin_pending_unassigned(n: int) -> int:
-    """Pedidos sin asignar: 0, 1-2, 3-5, 6-10, 11+ → 0-4."""
+    """Discretiza la cantidad de pedidos sin asignar (0-4)."""
     if n == 0:
         return 0
     if n <= 2:
@@ -44,7 +50,7 @@ def bin_pending_unassigned(n: int) -> int:
 
 
 def bin_urgent(n: int) -> int:
-    """Pedidos urgentes: 0, 1, 2-3, 4+ → 0-3."""
+    """Discretiza la cantidad de pedidos urgentes (0-3)."""
     if n == 0:
         return 0
     if n == 1:
@@ -55,7 +61,7 @@ def bin_urgent(n: int) -> int:
 
 
 def bin_free_riders(n: int) -> int:
-    """Riders elegibles: 0, 1, 2, 3+ → 0-3."""
+    """Discretiza la cantidad de riders elegibles (0-3)."""
     if n == 0:
         return 0
     if n == 1:
@@ -66,7 +72,7 @@ def bin_free_riders(n: int) -> int:
 
 
 def bin_min_slack(slack: int) -> int:
-    """Tiempo mínimo hasta deadline: ≤0, 1-4, 5-8, 9-15, 16+ → 0-4."""
+    """Discretiza el tiempo mínimo (slack) hasta el deadline (0-4)."""
     if slack <= 0:
         return 0
     if slack <= 4:
@@ -79,7 +85,12 @@ def bin_min_slack(slack: int) -> int:
 
 
 def bin_min_slack_with_sentinel(slack: int) -> int:
-    """Min slack con bin reservado para 'sin pedidos' (valor muy alto)."""
+    """Discretiza min_slack incluyendo un valor centinela para 'sin pedidos'.
+
+    Returns:
+        0-4 para valores normales de slack.
+        5 si no hay pedidos (slack >= 300).
+    """
     if slack >= 300:
         return 5  # sentinel alto (sin pedidos sin asignar)
     if slack == 0:
@@ -94,7 +105,7 @@ def bin_min_slack_with_sentinel(slack: int) -> int:
 
 
 def bin_zones_congested(count: int) -> int:
-    """Zonas con tráfico medium/high: 0, 1, 2, 3-4 → 0-3."""
+    """Discretiza la cantidad de zonas con tráfico medio/alto (0-3)."""
     if count == 0:
         return 0
     if count == 1:
@@ -105,7 +116,7 @@ def bin_zones_congested(count: int) -> int:
 
 
 def bin_backlog(n: int) -> int:
-    """Pedidos pendientes totales: 0, 1-3, 4-7, 8-15, 16+ → 0-4."""
+    """Discretiza el total de pedidos pendientes (backlog) (0-4)."""
     if n == 0:
         return 0
     if n <= 3:
@@ -118,7 +129,7 @@ def bin_backlog(n: int) -> int:
 
 
 def bin_urgent_ratio(ratio: float) -> int:
-    """Ratio urgentes/total: 0%, 1-25%, 26-50%, 51-75%, 76-100% → 0-4."""
+    """Discretiza la proporción de pedidos urgentes sobre el total (0-4)."""
     if ratio <= 0:
         return 0
     if ratio <= 0.25:
@@ -131,7 +142,7 @@ def bin_urgent_ratio(ratio: float) -> int:
 
 
 def bin_imbalance(std: float) -> int:
-    """Desbalance de carga (std de pedidos asignados): <0.5, <1.5, ≥1.5 → 0-2."""
+    """Discretiza el desbalance de carga entre riders (0-2)."""
     if std < 0.5:
         return 0
     if std < 1.5:
@@ -140,7 +151,7 @@ def bin_imbalance(std: float) -> int:
 
 
 def bin_fatigue(avg: float) -> int:
-    """Fatiga promedio: <1.0, <2.5, ≥2.5 → 0-2."""
+    """Discretiza la fatiga promedio de la flota (0-2)."""
     if avg < 1.0:
         return 0
     if avg < 2.5:
@@ -149,7 +160,7 @@ def bin_fatigue(avg: float) -> int:
 
 
 def bin_delta_traffic(delta: float) -> int:
-    """Cambio en presión de tráfico normalizada: 0, pequeño, medio, grande → 0-3."""
+    """Discretiza el cambio en la presión de tráfico (0-3)."""
     if delta <= 0.0:
         return 0
     if delta <= 0.3:
@@ -160,7 +171,7 @@ def bin_delta_traffic(delta: float) -> int:
 
 
 def bin_busy_riders(n: int) -> int:
-    """Riders en ruta (ocupados): 0, 1, 2-3, 4+ → 0-3."""
+    """Discretiza la cantidad de riders ocupados/en ruta (0-3)."""
     if n == 0:
         return 0
     if n == 1:
@@ -171,7 +182,7 @@ def bin_busy_riders(n: int) -> int:
 
 
 def bin_riders_at_restaurant(n: int) -> int:
-    """Riders en tienda (listos para salir): 0, 1, 2+ → 0-2."""
+    """Discretiza la cantidad de riders esperando en el restaurante (0-2)."""
     if n == 0:
         return 0
     if n == 1:
@@ -180,11 +191,12 @@ def bin_riders_at_restaurant(n: int) -> int:
 
 
 def bin_capacity_mix(partial: int, full: int) -> int:
-    """
-    Mezcla de carga por flota:
-    0: todos vacíos
-    1: hay parciales, sin full
-    2: hay full (3+ activos)
+    """Clasifica el estado de capacidad de la flota.
+
+    Returns:
+        0: Todos vacíos.
+        1: Hay parciales (con espacio), pero ninguno lleno.
+        2: Hay riders llenos (3+ activos).
     """
     if full > 0:
         return 2
@@ -194,7 +206,7 @@ def bin_capacity_mix(partial: int, full: int) -> int:
 
 
 def bin_min_rider_distance(dist: float) -> int:
-    """Distancia mínima rider elegible -> pedido más cercano: 0-3, 4-8, 9-15, 16+ → 0-3."""
+    """Discretiza la distancia mínima de un rider a un pedido (0-3)."""
     if dist <= 3:
         return 0
     if dist <= 8:
@@ -205,7 +217,12 @@ def bin_min_rider_distance(dist: float) -> int:
 
 
 def bin_distance_with_sentinel(dist: float) -> int:
-    """Distancia/ETA con bin reservado para sentinel (<0)."""
+    """Discretiza distancia/ETA incluyendo valor centinela (<0).
+
+    Returns:
+        0 si dist < 0 (valor inválido/centinela).
+        1-4 para distancias válidas.
+    """
     if dist < 0:
         return 0
     if dist <= 3:
@@ -223,7 +240,7 @@ def bin_distance_with_sentinel(dist: float) -> int:
 
 
 def traffic_pressure_from_zones(traffic_zones: Dict) -> float:
-    """Calcula presión de tráfico normalizada (promedio) desde zonas."""
+    """Calcula la presión promedio de tráfico normalizada basada en zonas."""
     mapping = {"low": 1.0, "medium": 1.5, "high": 2.2}
     if not traffic_zones:
         return 1.0
@@ -234,9 +251,18 @@ def traffic_pressure_from_zones(traffic_zones: Dict) -> float:
 def extract_features(
     snap: Dict, episode_len: int, prev_traffic_pressure: float = 1.0
 ) -> Dict:
-    """
-    Extrae todos los features necesarios desde un snapshot del simulador.
-    Retorna un diccionario con valores crudos (sin discretizar).
+    """Extrae características crudas del estado de la simulación.
+
+    Procesa el snapshot para obtener métricas sobre pedidos, riders y tráfico
+    antes de la discretización.
+
+    Args:
+        snap: Snapshot del simulador.
+        episode_len: Duración total del episodio.
+        prev_traffic_pressure: Presión de tráfico del tick anterior.
+
+    Returns:
+        Diccionario con features calculados (pendientes, urgentes, distancias, etc.).
     """
     t = snap.get("t", 0)
     restaurant = snap.get("restaurant", (0, 0))
@@ -453,10 +479,18 @@ def extract_features(
 
 @dataclass
 class FactoredStateEncoder:
-    """
-    Genera estados discretizados para 2 Q-tables: Q1 (asignación) y Q3 (incidente).
-    IMPORTANTE: Usar update_prev=False en encode_all() durante choose_action y update.
-    Llamar commit() exactamente una vez por tick para actualizar prev_traffic_pressure.
+    """Codificador de estados para el agente factorizado.
+
+    Convierte snapshots de simulación en tuplas de estado discretizadas para:
+    - Q1: Decisiones de asignación.
+    - Q3: Decisiones de replanificación por incidentes.
+
+    Mantiene estado interno (presión de tráfico previa) para detectar cambios.
+
+    Attributes:
+        episode_len: Duración máxima del episodio para normalizar tiempo.
+        prev_traffic_pressure: Presión de tráfico del paso anterior (para calcular delta).
+        delta_traffic_threshold: Umbral de cambio de tráfico para activar Q3.
     """
 
     episode_len: int = 900
@@ -466,13 +500,16 @@ class FactoredStateEncoder:
     delta_traffic_threshold: float = 0.1
 
     def reset(self) -> None:
-        """Resetea estado interno. Llamar al inicio de cada episodio."""
+        """Resetea el estado interno al inicio de un nuevo episodio."""
         self.prev_traffic_pressure = 1.0
 
     def commit(self, snap: Dict) -> None:
-        """
-        Actualiza prev_traffic_pressure. Llamar EXACTAMENTE una vez por tick,
-        después de que se haya procesado el update de Q-learning.
+        """Actualiza la presión de tráfico histórica.
+
+        Debe llamarse una vez por tick, después de procesar actualizaciones Q.
+
+        Args:
+            snap: Snapshot actual.
         """
         traffic_zones = snap.get("traffic_zones", {})
         if traffic_zones:
@@ -483,19 +520,17 @@ class FactoredStateEncoder:
             self.prev_traffic_pressure = mapping.get(traffic_global, 1.0)
 
     def encode_all(self, snap: Dict, update_prev: bool = False) -> Dict[str, Tuple]:
-        """
-        Retorna los 2 estados discretizados (Q1 y Q3).
+        """Genera los estados discretizados para Q1 y Q3.
 
         Args:
-            snap: Snapshot del simulador
-            update_prev: DEPRECATED, usar commit() en su lugar.
+            snap: Snapshot del simulador.
+            update_prev: DEPRECATED. Usar commit() en su lugar.
 
         Returns:
-            {
-                "s_assign": tuple de 8 ints para Q₁ (añadido distancia),
-                "s_incident": tuple de 4 ints para Q₃,
-                "features": dict con valores crudos (para debug/logging)
-            }
+            Diccionario con las claves:
+            - 's_assign': Tuple de estado para Q1.
+            - 's_incident': Tuple de estado para Q3.
+            - 'features': Diccionario de features crudos.
         """
         features = extract_features(snap, self.episode_len, self.prev_traffic_pressure)
 
@@ -531,14 +566,11 @@ class FactoredStateEncoder:
         }
 
     def should_use_q1(self, features: Dict) -> bool:
-        """¿Hay trabajo por asignar?"""
+        """Determina si se debe consultar Q1 (hay trabajo por asignar)."""
         return features["pending_unassigned"] > 0 and features["free_riders"] > 0
 
     def should_use_q3(self, features: Dict) -> bool:
-        """
-        ¿Hubo cambio significativo de tráfico?
-        Activación por SEÑAL (delta_traffic > umbral), no por reloj.
-        """
+        """Determina si se debe consultar Q3 (cambio significativo de tráfico)."""
         return features["delta_traffic"] >= self.delta_traffic_threshold
 
 
@@ -548,7 +580,11 @@ class FactoredStateEncoder:
 
 
 def state_space_sizes() -> Dict[str, int]:
-    """Retorna el tamaño de cada espacio de estados (Q1 y Q3 solamente)."""
+    """Calcula y retorna el tamaño combinatorio de los espacios de estados.
+
+    Returns:
+        Diccionario con tamaños de 'Q1_assign', 'Q3_incident' y 'total'.
+    """
     # Q₁: 5 * 5 * 4 * 4 * 6 * 3 * 5 * 3 * 5 = 540,000
     q1_size = 5 * 5 * 4 * 4 * 6 * 3 * 5 * 3 * 5
 

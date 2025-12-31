@@ -1,7 +1,16 @@
 # train_factored.py
-"""
-Entrenamiento del agente Q-Learning factorizado.
-Con detección de convergencia por delta Q.
+"""Entrenamiento del agente Q-Learning factorizado.
+
+Este script contiene la lógica para entrenar el agente utilizando la simulación.
+Soporta dos modos de entrenamiento:
+1. Secuencial: Entrenamiento en un solo proceso.
+2. Paralelo: Entrenamiento distribuido utilizando múltiples workers (multiprocessing).
+
+Incluye mecanismos de:
+- Epsilon-greedy decay.
+- Guardado de checkpoints.
+- Logging de métricas (recompensa, eficiencia, convergencia).
+- Detección de convergencia basada en la estabilidad de la tabla Q (delta Q).
 """
 from __future__ import annotations
 import copy
@@ -23,13 +32,17 @@ from core.factored_q_agent import FactoredQAgent, FactoredQConfig
 
 FAST_EPISODES = 2
 FAST_MAX_TICKS = 200
-WORKER_SEED_STRIDE = 9973  # Primo para espaciar seeds entre episodios/worker
-EVAL_SEED_OFFSET = 100_000  # Evita solaparse con semillas de entrenamiento
+WORKER_SEED_STRIDE = 9973  # Primo grande para espaciar semillas entre workers
+EVAL_SEED_OFFSET = 100_000  # Offset para semillas de evaluación (evita solapamiento)
 
 
 @dataclass
 class ParallelTrainConfig:
-    """Configuración del entrenamiento paralelo."""
+    """Configuración para el entrenamiento paralelo.
+
+    Contiene todos los hiperparámetros y rutas necesarias para coordinar
+    a los workers y al proceso principal.
+    """
 
     n_episodes: int
     out_dir: str
@@ -55,8 +68,10 @@ class ParallelTrainConfig:
 
 @dataclass
 class EpisodeResult:
-    """Resultado de un episodio generado en un worker."""
+    """Resultado resumen de un episodio ejecutado por un worker.
 
+    Se envía desde el worker hacia el proceso principal para actualizar el agente global.
+    """
     episode: int
     seed: int
     reward: float
@@ -79,7 +94,7 @@ class EpisodeResult:
 
 
 def _build_base_sim_config(episode_len: int, seed: int) -> SimConfig:
-    """Config base compartida con train secuencial."""
+    """Construye la configuración base del simulador compartida entre modos."""
     return SimConfig(
         width=45,
         height=35,
@@ -98,7 +113,16 @@ def _build_base_sim_config(episode_len: int, seed: int) -> SimConfig:
 def _epsilon_scheduler(
     epsilon_start: float, epsilon_end: float, decay_steps: int
 ) -> Callable[[int], float]:
-    """Crea una schedule monótona y acotada."""
+    """Crea una función de schedule para epsilon (decaimiento lineal).
+
+    Args:
+        epsilon_start: Valor inicial.
+        epsilon_end: Valor final mínimo.
+        decay_steps: Número de pasos hasta llegar al valor final.
+
+    Returns:
+        Función que recibe el índice de paso y devuelve el epsilon actual.
+    """
     epsilon_start = float(epsilon_start)
     epsilon_end = float(epsilon_end)
     if decay_steps <= 0:
@@ -115,7 +139,10 @@ def _epsilon_scheduler(
 
 
 def _snapshot_agent(agent: FactoredQAgent) -> Dict[str, Any]:
-    """Snapshot inmutable para workers."""
+    """Crea una copia ligera (snapshot) del agente para enviar a los workers.
+
+    No copiamos el encoder completo, solo las tablas Q y configuración esencial.
+    """
     return {
         "Q1": copy.deepcopy(agent.Q1),
         "Q3": copy.deepcopy(agent.Q3),
@@ -128,7 +155,7 @@ def _snapshot_agent(agent: FactoredQAgent) -> Dict[str, Any]:
 def _make_worker_agent(
     snapshot: Dict[str, Any], epsilon: float, episode_len: int, seed: int
 ) -> FactoredQAgent:
-    """Construye un agente para rollout (solo lee)."""
+    """Reconstruye una instancia de `FactoredQAgent` en el worker a partir del snapshot."""
     agent = FactoredQAgent(
         cfg=snapshot["cfg"],
         encoder=FactoredStateEncoder(episode_len=episode_len),
@@ -152,7 +179,19 @@ def _run_episode_worker(
     max_steps: int,
     base_seed: int,
 ) -> EpisodeResult:
-    """Ejecuta un episodio completo y retorna transiciones."""
+    """Función target para los workers. Ejecuta un episodio completo y devuelve resultados y transiciones.
+
+    Args:
+        episode: Número de episodio local.
+        base_cfg_dict: Diccionario de configuración de SimConfig.
+        snapshot: Snapshot del agente (Q-tables).
+        epsilon: Valor de exploración.
+        max_steps: Límite de pasos.
+        base_seed: Semilla base global.
+
+    Returns:
+        Objeto `EpisodeResult` con todas las métricas y transiciones del episodio.
+    """
     cfg = SimConfig(**base_cfg_dict)
     cfg.seed = base_seed + episode
     cfg.episode_len = max_steps
@@ -249,7 +288,19 @@ def _run_episode_worker(
 def _apply_episode_to_agent(
     agent: FactoredQAgent, result: EpisodeResult, epsilon: float
 ) -> Dict[str, Any]:
-    """Aplica transiciones en el learner en orden estable."""
+    """Integra las transiciones de un worker en el agente global (Learner).
+
+    Al ser un algoritmo off-policy (Q-Learning) o usar un buffer, técnicamente podríamos procesar
+    batch updates, pero aquí actualizamos paso a paso para mantener la lógica simple.
+
+    Args:
+        agent: Instancia del agente global.
+        result: Resultado del episodio de un worker.
+        epsilon: Epsilon actual (solo para logging/estado, no afecta updates pasados).
+
+    Returns:
+        Diccionario con estadísticas de la actualización (max_delta, etc.).
+    """
     agent.encoder.reset()
     agent.reset_delta()
     agent.epsilon = epsilon
@@ -274,7 +325,10 @@ def _evaluate_greedy(
     n_episodes: int,
     base_seed: int,
 ) -> Dict[str, float]:
-    """Evalúa con epsilon=0 y restaura después."""
+    """Ejecuta una evaluación Greedy (epsilon=0) para medir el rendimiento actual.
+
+    Restaura el epsilon original del agente al finalizar.
+    """
     prev_eps = agent.epsilon
     agent.epsilon = 0.0
 
@@ -372,6 +426,11 @@ def train(
     eps_decay: float = 0.995,
     eps_min: float = 0.05,
 ):
+    """Función principal de entrenamiento secuencial.
+
+    Ejecuta simulaciones en serie, actualizando el agente tras cada paso o episodio.
+    Guarda métricas CSV y checkpoints de la tabla Q.
+    """
     os.makedirs(out_dir, exist_ok=True)
 
     if fast:
@@ -637,7 +696,11 @@ def train(
 
 
 def train_parallel(cfg: ParallelTrainConfig) -> None:
-    """Entrenamiento en modo actor-learner con multiprocessing."""
+    """Entrenamiento paralelo utilizando el patrón Actor-Learner (aprox).
+
+    Los workers (actores) generan episodios usando una copia del agente.
+    El proceso principal (learner) recoge las transiciones y actualiza la Q-table global.
+    """
     os.makedirs(cfg.out_dir, exist_ok=True)
 
     n_episodes = cfg.n_episodes

@@ -1,6 +1,9 @@
 # core/factored_q_agent.py
-"""
-Agente Q-Learning factorizado con 2 Q-tables: Q1 (asignación) y Q3 (incidente/tráfico).
+"""Agente Q-Learning factorizado con dos tablas Q.
+
+Este módulo implementa un agente que utiliza dos tablas Q (Q1 y Q3) para
+aprender políticas de despacho. Q1 se especializa en decisiones de asignación,
+mientras que Q3 maneja situaciones de cambios bruscos en el tráfico.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -19,21 +22,38 @@ from core.dispatch_policy import (
 
 @dataclass
 class FactoredQConfig:
-    """Configuración para el agente Q-Learning factorizado."""
+    """Configuración para el agente Q-Learning factorizado.
 
-    alpha: float = 0.15  # learning rate
-    gamma: float = 0.95  # discount factor
-    eps_start: float = 1.0  # epsilon inicial
-    eps_min: float = 0.05  # epsilon mínimo
-    eps_decay: float = 0.995  # decay por episodio
+    Attributes:
+        alpha: Tasa de aprendizaje (learning rate).
+        gamma: Factor de descuento.
+        eps_start: Epsilon inicial para exploración.
+        eps_min: Valor mínimo de epsilon.
+        eps_decay: Factor de decaimiento de epsilon.
+    """
+    alpha: float = 0.15
+    gamma: float = 0.95
+    eps_start: float = 1.0
+    eps_min: float = 0.05
+    eps_decay: float = 0.995
 
 
 @dataclass
 class FactoredQAgent:
-    """
-    Agente Q-Learning con 2 Q-tables factorizadas:
-    - Q1 (Asignación): cuando hay pedidos sin asignar y riders elegibles
-    - Q3 (Incidente): cuando cambia el tráfico significativamente
+    """Agente Q-Learning con 2 tablas factorizadas.
+
+    Utiliza una descomposición de tareas:
+    - Q1 (Asignación): Se activa cuando hay pedidos sin asignar. Aprende a priorizar
+      entre urgentes y cercanos.
+    - Q3 (Incidente): Se activa cuando hay cambios significativos en el tráfico
+      y riders en ruta. Aprende si es mejor replanificar o esperar.
+
+    Attributes:
+        cfg: Configuración de hiperparámetros.
+        encoder: Codificador de estados factorizados.
+        seed: Semilla aleatoria.
+        Q1: Tabla Q para estados de asignación.
+        Q3: Tabla Q para estados de incidente.
     """
 
     cfg: FactoredQConfig = field(default_factory=FactoredQConfig)
@@ -68,17 +88,28 @@ class FactoredQAgent:
     # ─────────────────────────────────────────────────────────────
 
     def get_q(self, q_table: Dict, state: Tuple, action: int) -> float:
+        """Obtiene el valor Q de una tabla específica."""
         return q_table.get((state, action), 0.0)
 
     def set_q(self, q_table: Dict, state: Tuple, action: int, value: float) -> None:
+        """Establece el valor Q en una tabla específica."""
         q_table[(state, action)] = value
 
     def best_action(self, q_table: Dict, state: Tuple, actions: List[int]) -> int:
-        """Retorna la mejor acción con tie-break aleatorio."""
+        """Retorna la mejor acción greedy con desempate determinista.
+
+        Args:
+            q_table: Tabla Q a consultar.
+            state: Estado actual.
+            actions: Lista de acciones válidas.
+
+        Returns:
+            La acción con mayor valor Q.
+        """
         q_values = [(a, self.get_q(q_table, state, a)) for a in actions]
         max_q = max(v for _, v in q_values)
         best_actions = [a for a, v in q_values if v == max_q]
-        # Deterministic tie-break by action id
+        # Desempate determinista por ID de acción
         return sorted(best_actions)[0]
 
     # ─────────────────────────────────────────────────────────────
@@ -86,7 +117,13 @@ class FactoredQAgent:
     # ─────────────────────────────────────────────────────────────
 
     def _valid_actions_q1(self, features: Dict) -> List[int]:
-        """Filtra acciones inválidas para Q1 (asignación)."""
+        """Filtra acciones inválidas para Q1 (asignación).
+
+        Reglas:
+        - Si hay pedidos pendientes y riders libres -> puede asignar.
+        - Si hay urgentes -> habilita ASSIGN_URGENT.
+        - WAIT siempre es válido.
+        """
         valid = []
         has_urgent = features["urgent_unassigned"] > 0
         has_pending = features["pending_unassigned"] > 0
@@ -100,7 +137,12 @@ class FactoredQAgent:
         return valid
 
     def _valid_actions_q3(self, features: Dict) -> List[int]:
-        """Filtra acciones inválidas para Q3 (incidente/tráfico)."""
+        """Filtra acciones inválidas para Q3 (incidente/tráfico).
+
+        Reglas:
+        - Si hay riders ocupados -> puede replanificar.
+        - De lo contrario -> solo WAIT.
+        """
         has_busy = features["busy_riders"] > 0
         if has_busy:
             return [A_REPLAN_TRAFFIC, A_WAIT]
@@ -111,13 +153,19 @@ class FactoredQAgent:
     # ─────────────────────────────────────────────────────────────
 
     def choose_action(self, snap: Dict, training: bool = True) -> int:
-        """
-        Decide qué acción tomar basado en el snapshot actual.
+        """Decide qué acción tomar basado en el snapshot actual.
 
-        PRIORIDAD:
-        1. Q1 si hay trabajo (pending > 0 AND free_riders > 0)
-        2. Q3 si cambió tráfico Y hay riders en ruta (para replan)
-        3. WAIT si no hay nada que hacer
+        Jerarquía de decisión:
+        1. Q1 si hay trabajo (pedidos y riders libres).
+        2. Q3 si cambió el tráfico y hay riders en ruta.
+        3. WAIT si no hay nada que hacer.
+
+        Args:
+            snap: Snapshot del estado de la simulación.
+            training: Si es True, usa política epsilon-greedy.
+
+        Returns:
+            La acción seleccionada.
         """
         encoded = self.encoder.encode_all(snap, update_prev=False)
         features = encoded["features"]
@@ -144,7 +192,7 @@ class FactoredQAgent:
         return A_WAIT
 
     def _choose_from_q1(self, state: Tuple, features: Dict, training: bool) -> int:
-        """Elige acción desde Q₁ (Asignación) con action masking."""
+        """Elige acción desde Q1 (Asignación) aplicando action masking."""
         self.last_q_used = "Q1"
         valid = self._valid_actions_q1(features)
         if training and self.rng.random() < self.epsilon:
@@ -155,7 +203,7 @@ class FactoredQAgent:
         return action
 
     def _choose_from_q3(self, state: Tuple, features: Dict, training: bool) -> int:
-        """Elige acción desde Q₃ (Incidente) con action masking."""
+        """Elige acción desde Q3 (Incidente) aplicando action masking."""
         self.last_q_used = "Q3"
         valid = self._valid_actions_q3(features)
         if training and self.rng.random() < self.epsilon:
@@ -170,12 +218,15 @@ class FactoredQAgent:
     # ─────────────────────────────────────────────────────────────
 
     def get_max_q_for_next_state(self, snap_next: Dict) -> float:
-        """
-        Calcula max Q del estado siguiente usando la tabla que estará activa en t+1.
-        Aplica action masking: solo considera acciones válidas en s'.
+        """Calcula el max Q del estado siguiente usando la tabla activa en t+1.
+
+        Aplica action masking para considerar solo acciones válidas en s'.
+
+        Args:
+            snap_next: Snapshot del estado siguiente.
 
         Returns:
-            float: max_a Q(s', a) de la tabla aplicable en s', sobre acciones válidas.
+            Valor máximo Q(s', a) sobre las acciones válidas.
         """
         encoded = self.encoder.encode_all(snap_next, update_prev=False)
         features = encoded["features"]
@@ -199,15 +250,22 @@ class FactoredQAgent:
                 return 0.0
             return max(self.get_q(self.Q3, state, a) for a in valid)
 
-        # Sin trabajo ni replan, valor terminal
+        # Sin trabajo ni replan, valor terminal implícito 0
         return 0.0
 
     def update(
         self, snap: Dict, action: int, reward: float, snap_next: Dict, done: bool
     ) -> None:
-        """
-        Actualiza la Q-table correspondiente usando Unified Value Estimation.
+        """Actualiza la Q-table correspondiente usando Unified Value Estimation.
+
         Target = reward + gamma * get_max_q_for_next_state(snap_next)
+
+        Args:
+            snap: Estado actual.
+            action: Acción tomada.
+            reward: Recompensa recibida.
+            snap_next: Estado siguiente.
+            done: Flag de fin de episodio.
         """
         # Codificar estado actual
         encoded = self.encoder.encode_all(snap, update_prev=False)
@@ -218,7 +276,7 @@ class FactoredQAgent:
         q_table = None
 
         if table_to_use == "none":
-            # Inferir tabla aplicable (permite aprender con WAIT)
+            # Inferir tabla aplicable (permite aprender aunque la acción haya sido WAIT)
             has_work = features["pending_unassigned"] > 0
             has_riders_in_route = features["busy_riders"] > 0
             traffic_changed = self.encoder.should_use_q3(features)
@@ -255,20 +313,21 @@ class FactoredQAgent:
     def _unified_update(
         self, q_table: Dict, state: Tuple, action: int, target: float
     ) -> None:
-        """Actualización Q-Learning con target pre-calculado."""
+        """Ejecuta la actualización de la celda Q específica."""
         q_old = self.get_q(q_table, state, action)
         delta = abs(self.cfg.alpha * (target - q_old))
         q_new = q_old + self.cfg.alpha * (target - q_old)
         self.set_q(q_table, state, action, q_new)
 
-        # Tracking
+        # Tracking para estadísticas
         if delta > self.max_delta_q:
             self.max_delta_q = delta
 
     def commit_encoder(self, snap: Dict) -> None:
-        """
-        Actualiza prev_traffic_pressure del encoder.
-        Llamar EXACTAMENTE una vez por tick, después del update(), con snap (pre-step).
+        """Actualiza el estado interno del encoder (prev_traffic_pressure).
+
+        Debe llamarse EXACTAMENTE una vez por tick, después del update(),
+        con el snapshot pre-step.
         """
         self.encoder.commit(snap)
 
@@ -277,7 +336,7 @@ class FactoredQAgent:
     # ─────────────────────────────────────────────────────────────
 
     def decay_epsilon(self) -> None:
-        """Reduce epsilon (llamar al final de cada episodio)."""
+        """Reduce epsilon al final de cada episodio."""
         self.epsilon = max(self.cfg.eps_min, self.epsilon * self.cfg.eps_decay)
 
     # ─────────────────────────────────────────────────────────────
@@ -285,7 +344,7 @@ class FactoredQAgent:
     # ─────────────────────────────────────────────────────────────
 
     def save(self, path: str) -> None:
-        """Guarda las Q-tables y configuración."""
+        """Guarda las Q-tables y configuración en disco."""
         payload = {
             "Q1": self.Q1,
             "Q3": self.Q3,
@@ -299,7 +358,7 @@ class FactoredQAgent:
 
     @staticmethod
     def load(path: str, episode_len: int = 900) -> "FactoredQAgent":
-        """Carga un agente desde archivo. Migra archivos antiguos con Q2."""
+        """Carga un agente desde archivo. Migra archivos antiguos si es necesario."""
         with open(path, "rb") as f:
             payload = pickle.load(f)
 
@@ -312,7 +371,6 @@ class FactoredQAgent:
         agent.epsilon = payload.get("epsilon", payload["cfg"].eps_min)
         agent.actions_q1 = payload.get("actions_q1", agent.actions_q1)
         agent.actions_q3 = payload.get("actions_q3", agent.actions_q3)
-        # Nota: Q2 ignorado si existe en archivos antiguos
         return agent
 
     # ─────────────────────────────────────────────────────────────
@@ -320,7 +378,7 @@ class FactoredQAgent:
     # ─────────────────────────────────────────────────────────────
 
     def stats(self) -> Dict[str, Any]:
-        """Retorna estadísticas del agente."""
+        """Retorna estadísticas actuales del agente."""
         return {
             "Q1_entries": len(self.Q1),
             "Q3_entries": len(self.Q3),
@@ -334,7 +392,7 @@ class FactoredQAgent:
         self.max_delta_q = 0.0
 
     def get_max_delta(self) -> float:
-        """Retorna el máximo delta Q del episodio actual."""
+        """Retorna el máximo delta Q registrado en el episodio."""
         return self.max_delta_q
 
 

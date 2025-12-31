@@ -1,4 +1,9 @@
 # train.py
+"""Script de entrenamiento LEGACY para el agente original.
+
+Utiliza Q-Learning tabular simple (sin factorización).
+Se mantiene por motivos históricos y comparación.
+"""
 from __future__ import annotations
 import os, csv, time
 from datetime import datetime
@@ -18,10 +23,14 @@ ACTIONS = [A_ASSIGN_URGENT_NEAREST, A_ASSIGN_ANY_NEAREST, A_WAIT, A_REPLAN_TRAFF
 
 
 def run_episode(sim: Simulator, agent: QLearningAgent, encoder: StateEncoder, training: bool):
-    """
-    Ejecuta 1 episodio.
-    training=True  -> epsilon-greedy + update Q
-    training=False -> greedy (epsilon=0) sin update
+    """Ejecuta un episodio completo con el agente Legacy.
+
+    Args:
+        sim: Simulador configurado.
+        agent: Agente Q-Learning simple.
+        encoder: Codificador de estado simple.
+        training: Si es True, actualiza la tabla Q (epsilon-greedy).
+                  Si es False, solo evalúa (greedy, epsilon=0).
     """
     total_r = 0.0
     pending_sum = 0
@@ -81,10 +90,14 @@ def train(
     eval_every: int = 50,
     eval_episodes: int = 15,
 ):
+    """Entrena el agente Q-Learning simple (Legacy).
+
+    Guarda métricas y gráficas básicas.
+    """
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(plots_dir, exist_ok=True)
 
-    # ⚠️ IMPORTANTE: mismo cfg en train y eval (o muy parecido)
+    # mismo cfg en train y eval 
     cfg = SimConfig(
         width=45, height=35,
         n_riders=6,
@@ -101,10 +114,9 @@ def train(
     q_path = os.path.join(out_dir, "qtable.pkl")
     metrics_path = os.path.join(out_dir, "metrics.csv")
 
-    # ✅ continuar entrenamiento si ya existe Q
+    # continuar entrenamiento si ya existe Q
     if os.path.exists(q_path):
         agent = QLearningAgent.load(q_path)
-        # si cambiaste cfg de QConfig en código, mejor mantener el que ya está guardado
     else:
         agent = QLearningAgent(ACTIONS, QConfig(), seed=7)
 
@@ -228,6 +240,7 @@ def train(
 
 
 def plot_metrics(metrics_csv: str, plots_dir: str, run_tag: str):
+    """Genera gráficas básicas de entrenamiento (Legacy)."""
     df = pd.read_csv(metrics_csv)
 
     def save_plot(y, title, fname):

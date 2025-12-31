@@ -1,7 +1,13 @@
 # main_factored.py
-"""
-Script principal para ejecutar el agente factorizado.
-Soporta modo visual (GUI) y headless.
+"""Script principal para ejecutar el agente factorizado.
+
+Este script permite correr simulaciones utilizando un agente entrenado con Q-Learning factorizado (o una heurística).
+Soporta dos modos de operación:
+- Headless: Ejecución rápida en consola para obtener métricas.
+- Visual: Interfaz gráfica (GUI) con Matplotlib para visualizar el comportamiento del agente.
+
+Ejemplo de uso:
+    python main_factored.py --visual --policy trained --qpath artifacts/qtable_factored.pkl
 """
 from __future__ import annotations
 import argparse
@@ -15,60 +21,74 @@ from core.dispatch_policy import A_ASSIGN_ANY_NEAREST
 
 
 class TrainedFactoredPolicy:
-    """
-    Wrapper de política para usar con el agente factorizado entrenado.
-    Compatible con Visualizer.
+    """Wrapper de política para usar un agente factorizado entrenado en la simulación.
+
+    Adapta la interfaz del `FactoredQAgent` para que sea compatible con el bucle de
+    simulación y el visualizador.
+
+    Attributes:
+        agent: Instancia cargada de `FactoredQAgent`.
+        episode_len: Duración del episodio para normalización en el encoder.
     """
 
     def __init__(self, q_path: str, episode_len: int = 900):
         self.agent = FactoredQAgent.load(q_path, episode_len=episode_len)
-        self.agent.epsilon = 0.0  # Greedy siempre
+        self.agent.epsilon = 0.0  # Greedy siempre (explotación pura)
         self.episode_len = episode_len
 
     def choose_action_snapshot(self, snap: dict) -> int:
-        """Para uso en loops no visuales."""
+        """Selecciona una acción basada en el snapshot del simulador.
+
+        Args:
+            snap: Diccionario con el estado actual de la simulación.
+
+        Returns:
+            ID de la acción seleccionada.
+        """
         return self.agent.choose_action(snap, training=False)
 
     def reset(self):
-        """Resetear encoder al inicio de episodio."""
+        """Reinicia el estado interno del encoder al inicio de un episodio."""
         self.agent.encoder.reset()
 
 
 def parse_args():
+    """Parsea los argumentos de línea de comandos."""
     p = argparse.ArgumentParser(description="Ejecutar agente factorizado")
 
     # Modo
     p.add_argument("--visual", action="store_true", help="Abrir simulación con GUI")
-    p.add_argument("--policy", choices=["heuristic", "trained"], default="trained")
+    p.add_argument("--policy", choices=["heuristic", "trained"], default="trained", help="Política a usar")
 
     # Paths
-    p.add_argument("--qpath", default="artifacts/qtable_factored.pkl")
+    p.add_argument("--qpath", default="artifacts/qtable_factored.pkl", help="Ruta a la tabla Q guardada")
 
-    # Simulador
-    p.add_argument("--width", type=int, default=45)
-    p.add_argument("--height", type=int, default=35)
-    p.add_argument("--riders", type=int, default=6)
-    p.add_argument("--episode_len", type=int, default=900)
-    p.add_argument("--spawn", type=float, default=0.35)
-    p.add_argument("--max_eta", type=int, default=80)
-    p.add_argument("--block_size", type=int, default=6)
-    p.add_argument("--street_width", type=int, default=2)
-    p.add_argument("--seed", type=int, default=7)
+    # Configuraciones del Simulador
+    p.add_argument("--width", type=int, default=45, help="Ancho de la grilla")
+    p.add_argument("--height", type=int, default=35, help="Alto de la grilla")
+    p.add_argument("--riders", type=int, default=6, help="Número de repartidores")
+    p.add_argument("--episode_len", type=int, default=900, help="Duración del episodio (ticks)")
+    p.add_argument("--spawn", type=float, default=0.40, help="Probabilidad de generación de pedidos")
+    p.add_argument("--max_eta", type=int, default=80, help="Tiempo máximo de entrega inicial")
+    p.add_argument("--block_size", type=int, default=6, help="Tamaño de bloques de edificios")
+    p.add_argument("--street_width", type=int, default=2, help="Ancho de calles")
+    p.add_argument("--seed", type=int, default=7, help="Semilla aleatoria")
 
-    # Visual
+    # Visualización
     p.add_argument(
         "--interval_ms", type=int, default=200, help="Intervalo entre frames (ms)"
     )
 
     # Eventos dinámicos
-    p.add_argument("--traffic-interval", type=int, default=60)
-    p.add_argument("--closure-prob", type=float, default=0.02)
-    p.add_argument("--no-events", action="store_true", help="Sin eventos dinámicos")
+    p.add_argument("--traffic-interval", type=int, default=60, help="Intervalo cambio de tráfico")
+    p.add_argument("--closure-prob", type=float, default=0.02, help="Prob. cierre de calles")
+    p.add_argument("--no-events", action="store_true", help="Desactivar eventos dinámicos")
 
     return p.parse_args()
 
 
 def make_config(args) -> SimConfig:
+    """Crea la configuración de la simulación basada en argumentos."""
     # Spawn interno ON (necesitamos pedidos), tráfico interno ON (mismo régimen que entrenamiento)
     return SimConfig(
         width=args.width,
@@ -87,7 +107,10 @@ def make_config(args) -> SimConfig:
 
 
 def run_headless(sim: Simulator, policy_name: str, qpath: str, args):
-    """Ejecutar sin GUI."""
+    """Ejecuta la simulación en modo consola (sin GUI).
+
+    Muestra métricas periódicas y un resumen final.
+    """
     import random
 
     rng = random.Random(args.seed)
@@ -161,7 +184,7 @@ def run_headless(sim: Simulator, policy_name: str, qpath: str, args):
 
 
 def run_visual(sim: Simulator, policy_name: str, qpath: str, args):
-    """Ejecutar con GUI."""
+    """Ejecuta la simulación con interfaz gráfica (GUI)."""
     import random
 
     rng = random.Random(args.seed)

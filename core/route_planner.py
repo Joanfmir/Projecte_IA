@@ -1,4 +1,10 @@
 # core/route_planner.py
+"""Planificación de rutas utilizando A*.
+
+Este módulo implementa el algoritmo A* (A-Star) para encontrar caminos óptimos
+en el grafo de la ciudad (`RoadGraph`), utilizando una heurística Octile/Chebyshev
+adecuada para grids de 8 direcciones.
+"""
 from __future__ import annotations
 from typing import Dict, Tuple, List, Optional
 import heapq
@@ -6,20 +12,47 @@ from core.road_graph import RoadGraph, Node
 
 
 class RoutePlanner:
+    """Planificador de rutas utilizando A*.
+
+    Attributes:
+        graph: Instancia del grafo de la ciudad sobre el cual planificar.
+    """
+
     def __init__(self, graph: RoadGraph):
         self.graph = graph
 
     @staticmethod
     def heuristic(a: Node, b: Node) -> float:
-        """Octile distance: óptima para grids 8-direccionales."""
+        """Heurística Octile: calcula distancia estimada óptima en grid 8-direccional.
+        
+        Coste diagonal ≈ 1.414, ortogonal = 1.0.
+        Fórmula: max(dx, dy) + (sqrt(2) - 1) * min(dx, dy)
+
+        Args:
+            a: Nodo origen.
+            b: Nodo destino.
+
+        Returns:
+            Distancia estimada.
+        """
         dx = abs(a[0] - b[0])
         dy = abs(a[1] - b[1])
         return max(dx, dy) + 0.414 * min(dx, dy)
 
     def astar(self, start: Node, goal: Node) -> Tuple[List[Node], float]:
+        """Calcula el camino más corto entre start y goal usando A*.
+
+        Args:
+            start: Nodo de inicio.
+            goal: Nodo destino.
+
+        Returns:
+            Una tupla (camino, coste_total).
+            - camino: Lista de nodos desde start hasta goal.
+            - coste_total: Coste acumulado del camino.
+            Si no hay camino, retorna ([], inf).
         """
-        Devuelve (camino, coste_total). Si no hay camino, ([], inf)
-        """
+        # Cola de prioridad: (f_score, nodo)
         pq: List[Tuple[float, Node]] = []
         heapq.heappush(pq, (0.0, start))
 
@@ -42,7 +75,7 @@ class RoutePlanner:
         if goal not in came_from:
             return [], float("inf")
 
-        # reconstruir camino
+        # Reconstruir camino
         path = []
         cur = goal
         while cur is not None:

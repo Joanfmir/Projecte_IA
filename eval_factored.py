@@ -1,7 +1,17 @@
 # eval_factored.py
-"""
-Evaluación reproducible del agente Q-Learning factorizado.
-Compara contra heurística baseline con métricas completas.
+"""Evaluación reproducible del agente Q-Learning factorizado.
+
+Este script compara el rendimiento del agente entrenado (`FactoredQAgent`) contra
+una política heurística baseline (asignar al más cercano).
+
+Genera métricas detalladas incluyendo:
+- Tasa de entregas a tiempo (On-time ratio).
+- Recompensa total acumulada.
+- Tiempos promedio de entrega.
+- Fatiga de los repartidores y balance de carga.
+- Uso de tablas Q (Q1 vs Q3).
+
+Los resultados se guardan en JSON para posterior análisis.
 """
 from __future__ import annotations
 import argparse
@@ -25,8 +35,9 @@ FAST_MAX_TICKS = 200
 
 
 @dataclass
+@dataclass
 class EvalConfig:
-    """Configuración de evaluación."""
+    """Configuración de los parámetros de evaluación."""
 
     n_episodes: int = 20
     episode_len: int = 900
@@ -41,7 +52,7 @@ class EvalConfig:
     street_width: int = 2
 
     # Eventos dinámicos
-    # Tráfico ahora manejado internamente por simulator (enable_internal_traffic=True)
+    # Tráfico manejado internamente por simulator (enable_internal_traffic=True)
     enable_road_closures: bool = False
     road_closure_prob: float = 0.02  # probabilidad por tick de nuevo cierre
     max_closures: int = 5  # máximo de cierres activos
@@ -55,7 +66,7 @@ class EvalConfig:
 
 @dataclass
 class EpisodeMetrics:
-    """Métricas de un episodio."""
+    """Contenedor de métricas para un episodio individual."""
 
     seed: int
     reward_total: float
@@ -101,8 +112,17 @@ def run_episode_with_events(
     track_q_usage: bool = False,
     agent: "FactoredQAgent" = None,  # Para llamar commit_encoder
 ) -> EpisodeMetrics:
-    """
-    Ejecuta un episodio con eventos dinámicos (tráfico, cierres).
+    """Ejecuta un episodio de evaluación con eventos dinámicos configurados.
+
+    Args:
+        sim: Instancia del simulador ya configurada.
+        policy_fn: Función que toma (sim, snap) y devuelve (acción, q_used).
+        cfg: Configuración de evaluación.
+        track_q_usage: Si es True, cuenta cuántas veces se usó Q1/Q3.
+        agent: Referencia al agente (opcional) para actualizar su encoder.
+
+    Returns:
+        Objeto `EpisodeMetrics` con los resultados del episodio.
     """
     rng = sim.rng
 
@@ -262,7 +282,11 @@ def run_episode_with_events(
 
 
 def make_heuristic_policy():
-    """Política heurística baseline: siempre asignar el más cercano."""
+    """Crea una política heurística baseline: siempre asignar al rider más cercano.
+
+    Returns:
+        Una función `policy(sim, snap)` que devuelve la acción `A_ASSIGN_ANY_NEAREST`.
+    """
 
     def policy(sim, snap):
         return A_ASSIGN_ANY_NEAREST, None
@@ -271,7 +295,15 @@ def make_heuristic_policy():
 
 
 def make_factored_policy(q_path: str, episode_len: int):
-    """Política basada en agente factorizado entrenado."""
+    """Carga un agente factorizado y crea una función de política compatible.
+
+    Args:
+        q_path: Ruta al archivo pickle de la Q-table.
+        episode_len: Duración del episodio para el encoder.
+
+    Returns:
+        Tupla (policy_fn, agent_instance, prev_epsilon).
+    """
     agent = FactoredQAgent.load(q_path, episode_len=episode_len)
     prev_epsilon = agent.epsilon
     agent.epsilon = 0.0  # Greedy en evaluación
@@ -284,7 +316,10 @@ def make_factored_policy(q_path: str, episode_len: int):
 
 
 def evaluate(cfg: EvalConfig):
-    """Ejecuta evaluación completa."""
+    """Ejecuta la evaluación completa comparando Heurística vs Agente Factorizado.
+
+    Imprime resultados en consola y guarda un archivo JSON detallado.
+    """
 
     # Determinar seed base
     if cfg.base_seed is None:

@@ -1,3 +1,9 @@
+# simulation/visualizer.py
+"""Visualizador de la simulación utilizando Matplotlib.
+
+Este módulo provee la clase `Visualizer`, encargada de renderizar el estado
+de la simulación (mapa, riders, pedidos, tráfico) en tiempo real o para exportar.
+"""
 from __future__ import annotations
 
 import sys
@@ -24,9 +30,16 @@ from core.dispatch_policy import A_ASSIGN_ANY_NEAREST
 
 
 def ticks_to_time(t: int, episode_len: int) -> str:
-    """
-    Convierte ticks de simulación a formato hora HH:MM.
-    Empieza a las 19:00 y termina a las 00:00 (5 horas = 300 minutos).
+    """Convierte ticks de simulación a formato hora HH:MM.
+
+    Asume que el episodio dura 5 horas (19:00 a 00:00).
+
+    Args:
+        t: Tick actual.
+        episode_len: Duración total del episodio en ticks.
+
+    Returns:
+        String con la hora formateada (e.g., "21:30").
     """
     total_minutes = 300  # 5 horas (19:00 a 00:00)
     minutes_elapsed = (t / episode_len) * total_minutes
@@ -47,12 +60,18 @@ def ticks_to_time(t: int, episode_len: int) -> str:
 
 
 class Visualizer:
-    """
-    Visualizer optimizado + robusto:
-    - No recrea objetos por frame (evita ralentización)
-    - Stats se actualizan cada N ticks
-    - Rutas se recortan a K pasos
-    - Tráfico por zonas: soporta varias keys y fallback al tráfico global
+class Visualizer:
+    """Visualizador optimizado y robusto para la simulación.
+
+    Características:
+    - No recrea objetos por frame para evitar ralentización (usa `set_data`, `set_offsets`).
+    - Actualización de estadísticas cada N ticks.
+    - Recorte de rutas visualizadas.
+    - Soporte para visualización de tráfico por zonas.
+
+    Attributes:
+        sim: Instancia del simulador (`Simulator`).
+        policy: Política (opcional) que controla al agente.
     """
 
     def __init__(
@@ -159,7 +178,11 @@ class Visualizer:
     # -------------------------
     # Estático
     # -------------------------
+    # -------------------------
+    # Estático
+    # -------------------------
     def _draw_buildings(self):
+        """Dibuja los edificios como rectángulos y contornos."""
         for (x, y) in self.buildings:
             rect = Rectangle((x - 0.5, y - 0.5), 1, 1, linewidth=0, facecolor="#1a237e", alpha=0.55)
             self.ax.add_patch(rect)
@@ -185,6 +208,7 @@ class Visualizer:
                 self._closure_patches.append(rect)
 
     def _build_main_legend(self):
+        """Construye la leyenda principal con los símbolos del mapa."""
         handles = [
             Line2D([0], [0], marker="s", linestyle="None", markersize=11, markerfacecolor="#ff7f0e", markeredgecolor="none", label="Restaurante"),
             Line2D([0], [0], marker="o", linestyle="None", markersize=10, markerfacecolor="#2ca02c", markeredgecolor="#145a32", alpha=0.55, label="Pedido (normal)"),
@@ -198,6 +222,7 @@ class Visualizer:
         return self.ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=True, title="Leyenda", borderaxespad=0.0)
 
     def _build_zone_legend(self):
+        """Construye la leyenda de zonas de tráfico."""
         patches = [
             Patch(facecolor="#cfe8ff", edgecolor="none", label="Z0 (TL): ?"),
             Patch(facecolor="#d7ffd7", edgecolor="none", label="Z1 (TR): ?"),
@@ -208,6 +233,7 @@ class Visualizer:
         return patches, leg, leg.get_texts()
 
     def _draw_zone_labels(self):
+        """Dibuja etiquetas de texto para identificar las 4 zonas (cuadrantes)."""
         W, H = self.W, self.H
         fs = 14
         self.ax.text(W * 0.25, H * 0.75, "Z0 (TL)", fontsize=fs, weight="bold", ha="center", va="center", alpha=0.25)
@@ -219,9 +245,16 @@ class Visualizer:
     # Tráfico por zonas (ROBUSTO)
     # -------------------------
     def _extract_zone_levels(self, snap: dict) -> dict:
-        """
-        Devuelve dict {0: 'low', 1:'high', 2:'medium', 3:'low'}.
-        Soporta varias keys y fallback al tráfico global.
+        """Extrae el nivel de tráfico por zona desde el snapshot.
+
+        Normaliza las claves del diccionario de zonas para soportar diferentes formatos
+        (enteros, strings). Si no hay datos de zona, usa tráfico global.
+
+        Args:
+            snap: Snapshot del simulador.
+
+        Returns:
+            Diccionario {zone_id: traffic_level_str}.
         """
         zones = None
         for k in ("traffic_zones", "zone_traffic", "zone_levels", "zones_traffic"):
@@ -250,6 +283,7 @@ class Visualizer:
         return out
 
     def _update_zone_legend(self, snap: dict):
+        """Actualiza el texto de la leyenda de zonas con los niveles de tráfico actuales."""
         zones = self._extract_zone_levels(snap)
 
         def name(z: int) -> str:
@@ -263,6 +297,7 @@ class Visualizer:
     # Stats (barato)
     # -------------------------
     def _update_stats_panel(self, snap: dict):
+        """Actualiza el panel de texto con estadísticas en tiempo real."""
         t = snap["t"]
         riders = snap.get("riders", [])
         orders_full = snap.get("orders_full", [])
@@ -394,6 +429,7 @@ class Visualizer:
     # Dinámica
     # -------------------------
     def _ensure_riders(self, n: int):
+        """Asegura que existan N scatters para los riders en el plot."""
         while len(self.rider_scatters) < n:
             sc = self.ax.scatter([], [], s=120, marker="D", color="#1f77b4", edgecolors="white", linewidths=1.2, zorder=10)
             self.rider_scatters.append(sc)
@@ -403,9 +439,16 @@ class Visualizer:
             self.rider_labels.append(txt)
 
     def _safe_offsets(self, pts):
+        """Devuelve offsets seguros para scatter (evita errores con listas vacías)."""
         return pts if pts else [[-1000, -1000]]
 
     def _update(self, _frame):
+        """Función de actualización llamada por FuncAnimation en cada frame.
+
+        1. Consulta la política para obtener la acción.
+        2. Ejecuta un paso del simulador (`sim.step(a)`).
+        3. Recoge el snapshot y actualiza los gráficos.
+        """
         # acción
         if self.policy is not None:
             snap0 = self.sim.snapshot()
@@ -514,6 +557,7 @@ class Visualizer:
         return []
 
     def run(self):
+        """Inicia el bucle principal de visualización."""
         self.ani = FuncAnimation(
             self.fig,
             self._update,

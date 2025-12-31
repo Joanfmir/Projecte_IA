@@ -1,4 +1,9 @@
 # plot_metrics.py
+"""Script de utilidad para visualizar métricas de entrenamiento.
+
+Lee un archivo CSV generado por `train.py` o `train_factored.py` y genera
+gráficas PNG estáticas para análisis básico.
+"""
 from __future__ import annotations
 
 import os
@@ -8,6 +13,7 @@ import matplotlib.pyplot as plt
 
 
 def read_metrics(path: str) -> pd.DataFrame:
+    """Lee el CSV de métricas y valida su contenido básico."""
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"No existe {path}. Ejecuta primero train.py o pasa la ruta correcta con --metrics"
@@ -23,6 +29,7 @@ def ensure_dir(d: str) -> None:
 
 
 def save_plot(fig, out_dir: str, name: str, tag: str):
+    """Guarda la figura actual en disco y la cierra."""
     ensure_dir(out_dir)
     base = f"{name}.png" if not tag else f"{name}_{tag}.png"
     path = os.path.join(out_dir, base)
@@ -32,6 +39,7 @@ def save_plot(fig, out_dir: str, name: str, tag: str):
 
 
 def plot_series(df: pd.DataFrame, x: str, y: str, title: str, out_dir: str, name: str, tag: str):
+    """Genera y guarda un gráfico de línea simple."""
     fig = plt.figure()
     plt.plot(df[x], df[y])
     plt.title(title)

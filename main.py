@@ -1,4 +1,11 @@
 # main.py
+"""Script principal LEGACY para el agente original (no factorizado).
+
+Este script ejecuta la simulación con el agente Q-Learning básico (tabular simple)
+o heurísticas simples. Se mantiene como baseline para comparaciones.
+
+Para el agente principal del proyecto (factorizado), usar `main_factored.py`.
+"""
 from __future__ import annotations
 import argparse
 import os
@@ -17,9 +24,14 @@ ACTIONS = [A_ASSIGN_URGENT_NEAREST, A_ASSIGN_ANY_NEAREST, A_WAIT, A_REPLAN_TRAFF
 
 
 class TrainedPolicy:
-    """
-    Policy wrapper: decide usando SNAPSHOT + StateEncoder + Q-table.
-    (Esto hace que funcione igual en batch y en visual.)
+    """Wrapper de política para el agente Q-Learning simple (Legacy).
+
+    Adapta `QLearningAgent` para ser usado en la simulación, utilizando
+    el `StateEncoder` original (no factorizado).
+
+    Attributes:
+        encoder: Codificador de estado simple.
+        agent: Agente Q-Learning cargado desde disco.
     """
     def __init__(self, q_path: str, seed: int = 0):
         self.encoder = StateEncoder()
@@ -28,12 +40,14 @@ class TrainedPolicy:
 
     # Para loops no visuales
     def choose_action_snapshot(self, snap: dict) -> int:
+        """Elige una acción basada en el snapshot (usando el encoder legacy)."""
         s = self.encoder.encode(snap)
         return self.agent.choose_action(s, training=False)
 
 
 def parse_args():
-    p = argparse.ArgumentParser()
+    """Parsea argumentos de línea de comandos."""
+    p = argparse.ArgumentParser(description="Ejecutar agente Legacy (No factorizado)")
     p.add_argument("--visual", action="store_true", help="Abrir simulación con GUI")
     p.add_argument("--policy", choices=["heuristic", "trained"], default="heuristic")
     p.add_argument("--qpath", default="artifacts/qtable.pkl")
@@ -51,6 +65,7 @@ def parse_args():
 
 
 def make_config(a) -> SimConfig:
+    """Crea la configuración del simulador."""
     return SimConfig(
         width=a.width,
         height=a.height,
@@ -65,6 +80,7 @@ def make_config(a) -> SimConfig:
 
 
 def run_headless(sim: Simulator, policy_name: str, qpath: str):
+    """Ejecuta simulación sin GUI (Legacy)."""
     policy = None
     if policy_name == "trained":
         if not os.path.exists(qpath):
@@ -89,6 +105,7 @@ def run_headless(sim: Simulator, policy_name: str, qpath: str):
 
 
 def run_visual(sim: Simulator, policy_name: str, qpath: str, interval_ms: int):
+    """Ejecuta simulación con GUI (Legacy)."""
     if policy_name == "heuristic":
         vis = Visualizer(sim, policy=None, interval_ms=interval_ms)
         vis.run()

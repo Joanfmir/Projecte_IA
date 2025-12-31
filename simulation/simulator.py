@@ -1,4 +1,10 @@
 # simulation/simulator.py
+"""Simulador del entorno de entrega de comida.
+
+Este módulo gestiona el ciclo de vida de la simulación, incluyendo la generación de
+la ciudad, gestión de pedidos, movimiento de riders, tráfico y eventos aleatorios.
+Provee una interfaz estilo Gym (step, reset, reward) para agentes de RL.
+"""
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Tuple, Optional, List, Set
@@ -23,6 +29,25 @@ Node = Tuple[int, int]
 
 @dataclass
 class SimConfig:
+    """Configuración inmutable para la simulación.
+
+    Attributes:
+        width: Ancho de la cuadrícula.
+        height: Alto de la cuadrícula.
+        n_riders: Número de repartidores.
+        episode_len: Duración del episodio en ticks.
+        order_spawn_prob: Probabilidad de generar un pedido en cada tick.
+        max_eta: Tiempo máximo inicial (deadline) para nuevos pedidos.
+        seed: Semilla aleatoria para reproducibilidad.
+        activation_cost: Coste (penalización) por activar un rider inactivo.
+        batch_wait_ticks: Ticks de espera para batching (agrupar pedidos).
+        block_size: Tamaño de bloques de edificios.
+        street_width: Ancho de las calles.
+        road_closure_prob: Probabilidad de cierre de calle por evento.
+        road_closures_per_event: Cantidad de calles cerradas por evento.
+        enable_internal_spawn: Si el simulador genera pedidos internamente.
+        enable_internal_traffic: Si el simulador cambia el tráfico internamente.
+    """
     width: int = 25
     height: int = 25
     n_riders: int = 4
@@ -50,7 +75,23 @@ class SimConfig:
     enable_internal_traffic: bool = True
 
 
+
 class Simulator:
+    """Clase principal de la simulación.
+
+    Gestiona el estado global (tiempo, pedidos, riders, mapa) y ejecuta
+    la lógica de movimiento y eventos paso a paso.
+
+    Attributes:
+        cfg: Configuración de la simulación.
+        graph: Grafo de calles (`RoadGraph`).
+        planner: Planificador de rutas (`RoutePlanner`).
+        om: Gestor de pedidos (`OrderManager`).
+        fm: Gestor de flota (`FleetManager`).
+        assigner: Motor de asignación (`AssignmentEngine`).
+        t: Tiempo actual (tick).
+    """
+
     def __init__(self, cfg: SimConfig):
         self.cfg = cfg
         self.rng = random.Random(cfg.seed)
@@ -84,12 +125,18 @@ class Simulator:
             r.available = True
 
     def reset(self) -> None:
+        """Reinicia la simulación al estado inicial."""
         self.__init__(self.cfg)
 
     # -----------------------
-    # URBAN GENERATION
+    # GENERACIÓN URBANA
     # -----------------------
     def _generate_urban_buildings(self) -> Set[Node]:
+        """Genera un layout urbano procedural con bloques y avenidas.
+
+        Returns:
+            Conjunto de coordenadas (x, y) que contienen edificios (obstáculos).
+        """
         W, H = self.cfg.width, self.cfg.height
         bs = self.cfg.block_size
         sw = self.cfg.street_width
@@ -144,6 +191,7 @@ class Simulator:
         return buildings
 
     def _nearest_walkable(self, start: Node) -> Node:
+        """Encuentra la celda transitable más cercana mediante BFS/BFS expandido."""
         if self.graph.is_walkable(start):
             return start
 
@@ -167,6 +215,7 @@ class Simulator:
         return (self.cfg.width // 2, self.cfg.height // 2)
 
     def _random_walkable_cell(self) -> Optional[Node]:
+        """Selecciona una celda transitable aleatoria alcanzable desde el restaurante."""
         for _ in range(6000):
             x = self.rng.randrange(self.cfg.width)
             y = self.rng.randrange(self.cfg.height)
@@ -187,9 +236,9 @@ class Simulator:
         return self.om.get_order(order_id)
 
     def _sorted_drop_queue(self, rider: Rider) -> List[int]:
-        """
-        Ordena los pedidos por EDF (Earliest Deadline First) con tie-break por distancia.
-        Esto prioriza entregas urgentes sobre cercanas.
+        """Ordena los pedidos por EDF (Earliest Deadline First) con tie-break por distancia.
+
+        Prioriza entregas urgentes sobre las cercanas.
         """
         valid: List[Order] = []
         for oid in rider.assigned_order_ids:
@@ -212,6 +261,7 @@ class Simulator:
         return [oid for _, _, oid in scored]
 
     def _rebuild_plan_for_rider(self, rider: Rider) -> None:
+        """Reconstruye el plan de ruta y cola de entrega para un rider."""
         rider.assigned_order_ids = [
             oid
             for oid in rider.assigned_order_ids
@@ -281,6 +331,7 @@ class Simulator:
     # SNAPSHOT
     # -------------------
     def snapshot(self) -> dict:
+        """Devuelve una instantánea (snapshot) completa del estado actual."""
         pending = self.om.get_pending_orders()
         riders = self.fm.get_all()
 
@@ -364,10 +415,46 @@ class Simulator:
             "delivered_late": delivered_late,
         }
 
+    def print_late_orders(self) -> None:
+        """Imprime al final los pedidos que llegaron tarde."""
+        late_orders = []
+        for o in self.om.orders:
+            if o.delivered_at is not None and o.delivered_at > o.deadline:
+                late_orders.append(o)
+        
+        if not late_orders:
+            print("\n✅ ¡Todos los pedidos llegaron a tiempo!")
+            return
+        
+        print(f"\n❌ PEDIDOS QUE LLEGARON TARDE: {len(late_orders)}")
+        print("-" * 60)
+        
+        # Función para convertir ticks a hora legible
+        def tick_to_time(tick: int) -> str:
+            total_hours = 5.0  # 19:00 a 00:00
+            hours_elapsed = (tick / self.cfg.episode_len) * total_hours
+            hour = 19 + int(hours_elapsed)
+            minutes = int((hours_elapsed % 1) * 60)
+            return f"{hour:02d}:{minutes:02d}"
+        
+        for o in late_orders:
+            created_time = tick_to_time(o.created_at)
+            deadline_time = tick_to_time(o.deadline)
+            delivered_time = tick_to_time(o.delivered_at)
+            retraso = o.delivered_at - o.deadline
+            retraso_min = (retraso / self.cfg.episode_len) * 5 * 60  # en minutos
+            
+            urgente = "URGENTE" if o.priority > 1 else "normal"
+            print(f"  Pedido #{o.order_id:3d} ({urgente})")
+            print(f"    Creado: {created_time} | Deadline: {deadline_time} | Entregado: {delivered_time}")
+            print(f"    Retraso: {retraso} ticks (~{retraso_min:.1f} min)")
+            print()
+
     # -------------------
     # Generación de pedidos / tráfico
     # -------------------
     def maybe_spawn_order(self) -> None:
+        """Genera un nuevo pedido aleatoriamente basado en la probabilidad configurada."""
         # Evitar crear pedidos que ya no podrían entregarse antes del fin de episodio
         ticks_remaining = self.cfg.episode_len - self.t
         if ticks_remaining <= self.cfg.max_eta:
@@ -388,7 +475,7 @@ class Simulator:
             )
 
     def maybe_change_traffic(self) -> None:
-        """Cambia el tráfico por zonas cada 60 ticks."""
+        """Cambia el tráfico por zonas aleatoriamente cada 60 ticks."""
         if self.t % 60 == 0 and self.t > 0:
             levels = ["low", "medium", "high"]
             # Cambiar cada zona con cierta probabilidad
@@ -449,11 +536,15 @@ class Simulator:
     # Movimiento + FATIGA
     # -------------------
     def move_riders_one_tick(self) -> Tuple[List[Order], int, float]:
-        """
-        Mueve riders un tick y procesa pickups/deliveries.
+        """Mueve riders un tick y procesa pickups/deliveries.
+
+        Aplica lógica de fatiga y regeneración.
 
         Returns:
-            Tuple[List[Order], int, float]: (pedidos entregados, número de pickups, distancia recorrida)
+            Tuple[List[Order], int, float]: 
+                - Lista de pedidos entregados en este tick.
+                - Cantidad de pickups realizados.
+                - Distancia total recorrida por la flota.
         """
         # --- parámetros fatiga (ajústalos aquí) ---
         FAT_STOP = 8.0  # si llega >= 8, se para
@@ -525,7 +616,7 @@ class Simulator:
                     r.position = nxt
                     r.distance_travelled += 1.0
                     distance_moved += 1.0
-                    r.fatigue += FAT_MOVE_INC  # ✅ sube al moverse
+                    r.fatigue += FAT_MOVE_INC  # sube al moverse
 
             tgt = r.current_target()
             if tgt is None:
@@ -550,14 +641,14 @@ class Simulator:
                     r.has_picked_up = True
                     r.wait_until = 0
 
-                    # ✅ marcar picked_up_at en todos sus pedidos pendientes
+                    # marcar picked_up_at en todos sus pedidos pendientes
                     for oid in list(r.assigned_order_ids):
                         o = self._get_order(oid)
                         if o is not None and o.is_pending() and o.picked_up_at is None:
                             self.om.mark_picked_up(oid, now=self.t)
                             picked_up_count += 1  # Reward shaping: contar pickups
 
-                    # ✅ fatiga extra por el "trabajo" de recoger/cargar
+                    # fatiga extra por el "trabajo" de recoger/cargar
                     r.fatigue += FAT_PICKUP_BONUS
 
                     r.waypoint_idx += 1
@@ -608,6 +699,7 @@ class Simulator:
     # State + Reward
     # -------------------
     def compute_state(self) -> tuple:
+        """Calcula el vector de estado (o tupla discreta) para el agente."""
         pending = len(self.om.get_pending_orders())
         urgent = [
             o
@@ -643,21 +735,28 @@ class Simulator:
         activation_count: int = 0,
         distance_moved: float = 0.0,
     ) -> float:
-        """
-        Calcula reward con shaping para pickups.
+        """Calcula la recompensa (reward) del tick actual con shaping.
 
-        Reward Shaping (CORREGIDO):
-        - +3.0 por cada pickup (feedback inmediato aumentado)
-        - +10.0 por entrega a tiempo
-        - -10.0 -2*late por entrega tardía
-        - -0.3 por pedido SIN ASIGNAR (no penaliza los que están en camino)
-        - -0.02 * avg_fatigue (reducido para no dominar)
-        - -activation_cost por cada rider que pasa de 0->1 pedidos (coste operativo)
-        - -0.1 por cada unidad de distancia recorrida (eficiencia de ruta)
+        Reward Shaping:
+        - +3.0 por cada pickup (feedback inmediato).
+        - +10.0 por entrega a tiempo.
+        - -10.0 - 2 * late por entrega tardía.
+        - -0.5 por pedido SIN ASIGNAR (penalización operativa).
+        - -coste_activacion si se activa un rider.
+        - Penalización leve por fatiga y distancia recorrida.
+
+        Args:
+            delivered_now: Pedidos entregados en el tick actual.
+            picked_up_count: Cantidad de pickups realizados.
+            activation_count: Cantidad de riders activados.
+            distance_moved: Distancia total recorrida.
+
+        Returns:
+            Valor de recompensa flotante.
         """
         r = 0.0
 
-        # Reward shaping: bonus por pickups (feedback inmediato) - AUMENTADO
+        # Reward shaping: bonus por pickups (feedback inmediato)
         r += 3.0 * picked_up_count
 
         # Reward por entregas
@@ -668,15 +767,14 @@ class Simulator:
                 late = o.delivered_at - o.deadline
                 r -= 10.0 + 2.0 * late
 
-        # CORRECCIÓN CRÍTICA: Solo penalizar pedidos SIN ASIGNAR
-        # Antes: penalizaba TODOS los pendientes, incluso los que ya estaban en camino
+        # Solo penalizar pedidos SIN ASIGNAR
         unassigned = [o for o in self.om.get_pending_orders() if o.assigned_to is None]
         r -= 0.5 * len(unassigned)
 
         # Coste de activar riders (batching friendly)
         r -= self.assigner.activation_cost * activation_count
 
-        # Fatigue penalty REDUCIDO para no dominar el reward
+        # Fatigue penalty reducido para no dominar el reward
         avg_fat = sum(x.fatigue for x in self.fm.get_all()) / max(
             1, len(self.fm.get_all())
         )
@@ -690,12 +788,15 @@ class Simulator:
     # Acción -> estrategia (CON BATCHING)
     # -------------------
     def apply_action(self, action: int) -> Tuple[int, int]:
-        """
-        Aplica la acción seleccionada.
-        BATCHING: asigna SOLO un par (pedido, rider) por tick.
+        """Aplica la acción seleccionada por el agente.
+
+        Soporta acciones de asignación (batching) y replanificación.
+
+        Args:
+            action: Identificador de la acción abstracta.
 
         Returns:
-            Tuple[int, int]: (#asignaciones, #activaciones_nuevas)
+            Tuple[int, int]: (#asignaciones realizadas, #riders activados).
         """
         assigned_count = 0
         activation_count = 0
@@ -741,14 +842,21 @@ class Simulator:
     # STEP (MARKOVIANO)
     # -------------------
     def step(self, action: int) -> tuple:
-        """
-        Orden de eventos Markoviano:
-        1. Observar estado (snapshot externo)
-        2. Aplicar acción
-        3. Mover riders (con tracking de pickups)
-        4. Calcular reward (con shaping para pickups)
-        5. Eventos aleatorios (afectan al SIGUIENTE estado, no al actual)
-        6. Incrementar tiempo
+        """Ejecuta un paso de simulación.
+
+        Sigue el flujo:
+        1. Aplicar acción del agente.
+        2. Mover riders y procesar pickups/deliveries.
+        3. Calcular recompensa.
+        4. Ejecutar eventos aleatorios (generar pedidos, tráfico, cierres).
+        5. Avanzar tiempo.
+
+        Args:
+            action: Acción seleccionada.
+
+        Returns:
+            Tuple: (reward, done) o state, reward, done, info según implementación.
+            Aquí retorna (reward, done).
         """
         # 1-2. Aplicar la acción elegida por el agente
         _, activation_count = self.apply_action(action)
@@ -775,4 +883,8 @@ class Simulator:
         # 6. Avanzar tiempo
         self.t += 1
         done = self.t >= self.cfg.episode_len
+
+        if done:
+            self.print_late_orders()
+
         return reward, done

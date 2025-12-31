@@ -1,26 +1,90 @@
-# Projecte_IA
+# Pizza Delivery RL
 
-## Entrenamiento factorizado
-- **Secuencial existente**: `python train_factored.py --episodes 500 --seed 7`
-- **Paralelo actor-learner (nuevo)**: `python train_factored.py --parallel --n-workers 4 --episodes 500 --max-steps-per-episode 900 --sync-every 10 --log-every 10 --save-every 50 --epsilon-start 1.0 --epsilon-end 0.05 --epsilon-decay-steps 500`
-  - Compatible con `artifacts/qtable_factored.pkl` y checkpoints previos (`--init-qpath` para arrancar desde uno distinto, `--qpath`/`--metrics-path` para rutas personalizadas).
-  - El learner aplica los updates; los workers solo generan rollouts con snapshots inmutables.
+Este proyecto implementa un entorno de simulación para el problema de **Delivery de Pizzas** y una solución basada en **Reinforcement Learning Factorizado (Factored Q-Learning)**.
 
-### Flags clave
-- `--n-workers`: nº de procesos de rollout (>=1).
-- `--max-steps-per-episode`: pasos por episodio (por defecto `episode_len`).
-- `--epsilon-start/--epsilon-end/--epsilon-decay-steps`: schedule lineal global por episodio.
-- `--sync-every`: refresco de snapshot enviado a los workers.
-- `--eval-every/--eval-episodes`: eval greedy (`epsilon=0`) con restauración automática.
-- `--log-every`, `--save-every`, `--qpath`, `--metrics-path`: control de I/O.
+El agente gestiona una flota de repartidores para recoger pedidos en un restaurante central y entregarlos a clientes distribuidos en una grilla urbana, minimizando tiempos de entrega y gestionando eventos dinámicos como tráfico y cortes de calle.
 
-### Schedule de epsilon
-`epsilon(t) = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * min(t, decay_steps) / decay_steps)`, donde `t` es el episodio global (0-index). Monótono y acotado.
+## Inicio Rápido
 
-### Medición rápida (smoke, 4 episodios, 200 steps, seed=123)
-| modo | workers | tiempo total | reward medio | wait_ratio | batching_eff | avg_rider_load |
-| --- | --- | --- | --- | --- | --- | --- |
-| Secuencial (`train_factored.py`) | 1 | 46.7s | -740.17 | 0.54 | 0.95 | 1.96 |
-| Paralelo (`--parallel`) | 2 | 43.9s | -951.86 | 0.50 | 0.94 | 1.94 |
+### Requisitos
+- Python 3.8+
+- Librerías: `numpy`, `matplotlib`, `pandas`, `tqdm`.
 
-En ambos casos se mantuvo `epsilon_start=1.0` con schedule lineal hasta `epsilon_end`, seeds fijas y mismos parámetros de simulación. Ajusta episodios/steps para ejecuciones largas; la aceleración proviene del paralelismo y menor overhead de I/O.
+### Estructura del Proyecto
+- `main_factored.py`: Script principal para visualización e inferencia.
+- `train_factored.py`: Script de entrenamiento paralelo/secuencial.
+- `eval_factored.py`: Script de evaluación reproducible y métricas detalladas.
+- `core/`: Lógica del agente (Q-Learning factorizado, encoding de estados, grafo vial).
+- `simulation/`: Motor de simulación y visualizador.
+
+---
+
+## Entrenamiento del Agente
+
+Se puede entrenar al agente desde cero en modo secuencial o paralelo (multiprocessing).
+
+```bash
+# Entrenamiento estándar (secuencial)
+python train_factored.py --episodes 1000 --save-every 100
+
+# Entrenamiento paralelo (más rápido)
+python train_factored.py --parallel --n-workers 4 --episodes 2000
+```
+
+**Argumentos clave:**
+- `--out-dir`: Carpeta para guardar checkpoints y métricas (default: `artifacts/`).
+- `--episode_len`: Duración de cada episodio en ticks (default: 900).
+- `--epsilon-start` / `--epsilon-end`: Control de exploración.
+
+El entrenamiento generará dos archivos importantes en `artifacts/`:
+1. `qtable_factored.pkl`: La tabla Q aprendida.
+2. `metrics_factored.csv`: Histórico de recompensas y estadísticas.
+
+---
+
+## Evaluación y Métricas
+
+Para evaluar el rendimiento del agente entrenado frente a una baseline heurística (asignación al más cercano):
+
+```bash
+python eval_factored.py --n-episodes 50 --qpath artifacts/qtable_factored.pkl
+```
+
+Este script genera un reporte en consola comparando:
+- Tasa de entregas a tiempo (On-time ratio).
+- Recompensa media.
+- Fatiga promedio de los riders.
+
+---
+
+## Visualización y Demo
+
+Para ver al agente en acción con una interfaz gráfica (Matplotlib):
+
+```bash
+python main_factored.py --visual --policy trained --qpath artifacts/qtable_factored.pkl
+```
+
+**Controles:**
+- La ventana muestra el mapa, los riders, pedidos urgentes (círculos rojos) y normales (verdes).
+- A la derecha se ve una "App" simulada con el estado de cada rider.
+- **Leyenda:**
+  - **Línea azul:** Ruta de entrega.
+  - **Línea roja:** Ruta de retorno a base.
+  - **Cuadrados naranjas:** Calles cortadas (obras).
+
+---
+
+## Detalles Técnicos
+
+### Enfoque Factorizado
+El agente descompone el problema en sub-decisiones para manejar la complejidad:
+1. **Asignación (Q1):** ¿A qué rider asignar un nuevo pedido? (Minimizar costes individuales).
+2. **Re-planificación (Q3):** ¿Debe un rider cambiar su ruta debido al tráfico?
+
+El estado se codifica (`FactoredStateEncoder`) discretizando variables como: tiempo restante, ubicación, carga actual y tráfico por zonas.
+
+### Simulación
+- **Grilla:** Mapa de Manhattan con edificios y sentidos de calles.
+- **Tráfico:** Dinámico, afecta la velocidad de movimiento en los 4 cuadrantes.
+- **Eventos:** Aparición estocástica de pedidos y cortes de calle temporales.

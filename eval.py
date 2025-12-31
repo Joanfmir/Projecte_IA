@@ -1,4 +1,9 @@
 # eval.py
+"""Script de evaluación LEGACY para el agente original.
+
+Compara el agente entrenado sin factorización contra una heurística simple.
+Muestra métricas en consola.
+"""
 from __future__ import annotations
 import statistics
 
@@ -13,6 +18,7 @@ ACTIONS = [A_ASSIGN_URGENT_NEAREST, A_ASSIGN_ANY_NEAREST, A_WAIT, A_REPLAN_TRAFF
 
 
 def run_episode(sim: Simulator, policy_fn):
+    """Ejecuta un episodio de evaluación (sin entrenar)."""
     total_r = 0.0
     pending_sum = 0
     steps = 0
@@ -38,6 +44,7 @@ def run_episode(sim: Simulator, policy_fn):
 
 
 def eval_all(n_episodes: int = 40, q_path: str = "artifacts/qtable.pkl", base_seed: int = 999):
+    """Ejecuta una evaluación comparativa (Heurística vs Q-Learning)."""
     base_cfg = SimConfig(
         width=45, height=35,
         n_riders=6,
