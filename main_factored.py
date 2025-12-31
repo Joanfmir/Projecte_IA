@@ -11,7 +11,7 @@ from simulation.simulator import Simulator, SimConfig
 from simulation.visualizer import Visualizer
 from core.factored_states import FactoredStateEncoder
 from core.factored_q_agent import FactoredQAgent
-from core.dispatch_policy import A_ASSIGN_ANY_NEAREST
+from core.shared_params import A_ASSIGN_ANY_NEAREST
 
 
 class TrainedFactoredPolicy:

@@ -10,7 +10,7 @@ from core.route_planner import RoutePlanner
 from core.order_manager import OrderManager, Order
 from core.fleet_manager import FleetManager, Rider
 from core.assignment_engine import AssignmentEngine
-from core.dispatch_policy import (
+from core.shared_params import (
     make_state,
     A_ASSIGN_URGENT_NEAREST,
     A_ASSIGN_ANY_NEAREST,

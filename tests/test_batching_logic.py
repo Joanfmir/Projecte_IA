@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 
-from core.dispatch_policy import A_ASSIGN_ANY_NEAREST, A_WAIT
+from core.shared_params import A_ASSIGN_ANY_NEAREST, A_WAIT
 from core.factored_q_agent import FactoredQAgent, FactoredQConfig
 from core.factored_states import FactoredStateEncoder
 from simulation.simulator import SimConfig, Simulator

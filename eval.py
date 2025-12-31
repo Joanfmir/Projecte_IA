@@ -1,84 +1,50 @@
-# eval.py
+"""
+Wrapper legacy que delega a la evaluación factorizada.
+Mantiene constantes y firma compatible para código existente.
+"""
 from __future__ import annotations
-import statistics
 
-from simulation.simulator import Simulator, SimConfig
-from core.dispatch_policy import (
-    A_ASSIGN_ANY_NEAREST, A_ASSIGN_URGENT_NEAREST, A_WAIT, A_REPLAN_TRAFFIC
+import runpy
+import sys
+import warnings
+
+from core.shared_params import (
+    A_ASSIGN_ANY_NEAREST,
+    A_ASSIGN_URGENT_NEAREST,
+    A_REPLAN_TRAFFIC,
+    A_WAIT,
 )
-from core.state_encoding import StateEncoder
-from core.q_learning import QLearningAgent
+from eval_factored import EvalConfig, evaluate as evaluate_factored
 
 ACTIONS = [A_ASSIGN_URGENT_NEAREST, A_ASSIGN_ANY_NEAREST, A_WAIT, A_REPLAN_TRAFFIC]
 
 
-def run_episode(sim: Simulator, policy_fn):
-    total_r = 0.0
-    pending_sum = 0
-    steps = 0
-
-    done = False
-    while not done:
-        snap = sim.snapshot()
-        pending_sum += len(snap.get("pending_orders", []))
-        steps += 1
-
-        a = policy_fn(sim, snap)
-        r, done = sim.step(a)
-        total_r += r
-
-    snap_end = sim.snapshot()
-    return {
-        "reward": total_r,
-        "pending_avg": pending_sum / max(1, steps),
-        "delivered_total": snap_end.get("delivered_total", 0),
-        "ontime": snap_end.get("delivered_ontime", 0),
-        "late": snap_end.get("delivered_late", 0),
-    }
-
-
-def eval_all(n_episodes: int = 40, q_path: str = "artifacts/qtable.pkl", base_seed: int = 999):
-    base_cfg = SimConfig(
-        width=45, height=35,
-        n_riders=6,
-        episode_len=900,
-        order_spawn_prob=0.35,
-        max_eta=80,
-        block_size=6,
-        street_width=2,
-        seed=base_seed,
+def eval_all(
+    n_episodes: int = 20,
+    q_path: str = "artifacts/qtable_factored.pkl",
+    base_seed: int = 7,
+):
+    """
+    Wrapper legacy que redirige a evaluate() del flujo factorizado.
+    """
+    warnings.warn(
+        "eval.py es legacy; usa eval_factored.evaluate/main",
+        DeprecationWarning,
+        stacklevel=2,
     )
+    cfg = EvalConfig(n_episodes=n_episodes, q_path=q_path, base_seed=base_seed)
+    return evaluate_factored(cfg)
 
-    encoder = StateEncoder()
-    agent = QLearningAgent.load(q_path)
-    agent.epsilon = 0.0  # greedy en evaluación
 
-    def heuristic_policy(sim, snap):
-        return A_ASSIGN_ANY_NEAREST
-
-    def q_policy(sim, snap):
-        s = encoder.encode(snap)
-        return agent.choose_action(s, training=False)
-
-    results_h = []
-    results_q = []
-
-    for i in range(n_episodes):
-        cfg = SimConfig(**base_cfg.__dict__)
-        cfg.seed = base_seed + i  # ✅ cada episodio eval con mapa/azar distinto
-
-        results_h.append(run_episode(Simulator(cfg), heuristic_policy))
-        results_q.append(run_episode(Simulator(cfg), q_policy))
-
-    def summarize(name, res):
-        print("\n===", name, "===")
-        for k in ["reward", "pending_avg", "delivered_total", "ontime", "late"]:
-            vals = [x[k] for x in res]
-            print(f"{k:14s}: mean={statistics.mean(vals):.3f}  std={statistics.pstdev(vals):.3f}")
-
-    summarize("HEURISTIC (nearest)", results_h)
-    summarize("Q-LEARNING", results_q)
+def main():
+    warnings.warn(
+        "eval.py es legacy; redirigiendo a eval_factored.py",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    sys.argv[0] = "eval_factored.py"
+    runpy.run_module("eval_factored", run_name="__main__")
 
 
 if __name__ == "__main__":
-    eval_all()
+    main()

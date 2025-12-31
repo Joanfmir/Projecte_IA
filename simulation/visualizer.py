@@ -9,7 +9,7 @@ from matplotlib.patches import Rectangle, Patch
 from matplotlib.lines import Line2D
 from matplotlib.collections import LineCollection
 
-from core.dispatch_policy import A_ASSIGN_ANY_NEAREST
+from core.shared_params import A_ASSIGN_ANY_NEAREST
 
 
 def ticks_to_time(t: int, episode_len: int) -> str:
