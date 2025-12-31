@@ -1,5 +1,5 @@
 """
-Wrapper legacy para mantener compatibilidad y redirigir a main_factored.py.
+Legacy wrapper to keep compatibility and redirect to main_factored.py.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ ACTIONS = [A_ASSIGN_URGENT_NEAREST, A_ASSIGN_ANY_NEAREST, A_WAIT, A_REPLAN_TRAFF
 
 def main():
     warnings.warn(
-        "main.py es legacy; redirigiendo a main_factored.py",
+        "main.py is legacy; redirecting to main_factored.py",
         DeprecationWarning,
         stacklevel=2,
     )

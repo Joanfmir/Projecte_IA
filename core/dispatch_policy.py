@@ -35,7 +35,7 @@ class DispatchPolicy:
 
     def __init__(self, cfg: QLearningConfig, seed: int = 123):
         warnings.warn(
-            "DispatchPolicy está deprecado; usa FactoredQAgent o core.shared_params",
+            "DispatchPolicy is deprecated; use FactoredQAgent or core.shared_params",
             DeprecationWarning,
             stacklevel=2,
         )

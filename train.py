@@ -1,6 +1,6 @@
 """
-Wrapper legacy que delega al flujo factorizado.
-Conserva los nombres/constantes para compatibilidad.
+Legacy wrapper delegating to the factored training flow.
+Keeps action constants for compatibility.
 """
 from __future__ import annotations
 
@@ -20,9 +20,9 @@ ACTIONS = [A_ASSIGN_URGENT_NEAREST, A_ASSIGN_ANY_NEAREST, A_WAIT, A_REPLAN_TRAFF
 
 
 def train(*args, **kwargs):
-    """Wrapper deprecado que llama a train_factored.train."""
+    """Deprecated wrapper that forwards to train_factored.train."""
     warnings.warn(
-        "train.py es legacy; usa el flujo factorizado (train_factored.py)",
+        "train.py is legacy; use the factored flow (train_factored.py)",
         DeprecationWarning,
         stacklevel=2,
     )
@@ -31,7 +31,7 @@ def train(*args, **kwargs):
 
 def main():
     warnings.warn(
-        "train.py es legacy; redirigiendo a train_factored.py",
+        "train.py is legacy; redirecting to train_factored.py",
         DeprecationWarning,
         stacklevel=2,
     )

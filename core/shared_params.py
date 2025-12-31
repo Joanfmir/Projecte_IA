@@ -11,13 +11,13 @@ from typing import Tuple
 
 State = Tuple[int, int, int, int, int, int, int, int]  # bins legacy
 
-# Acciones disponibles (consumidas por simulador, agentes y tests)
+# Available actions (consumed by simulator, agents, and tests)
 A_ASSIGN_URGENT_NEAREST = 0
 A_ASSIGN_ANY_NEAREST = 1
 A_WAIT = 2
 A_REPLAN_TRAFFIC = 3
 
-# Conjunto completo de acciones legacy/tabular
+# Full legacy/tabular action set
 ALL_ACTIONS = [
     A_ASSIGN_URGENT_NEAREST,
     A_ASSIGN_ANY_NEAREST,
@@ -28,7 +28,7 @@ ALL_ACTIONS = [
 
 @dataclass
 class QLearningConfig:
-    """Parámetros por defecto del agente Q-learning legacy."""
+    """Default parameters for the legacy Q-learning agent."""
 
     alpha: float = 0.15
     gamma: float = 0.95
@@ -43,7 +43,7 @@ class QLearningConfig:
 
 
 def bin_time(t: int, episode_len: int) -> int:
-    """Bucket para tiempo normalizado (consumido por simulator.make_state)."""
+    """Bucket for normalized time (consumed by simulator.make_state)."""
     frac = t / max(1, episode_len)
     if frac < 0.2:
         return 0
@@ -57,7 +57,7 @@ def bin_time(t: int, episode_len: int) -> int:
 
 
 def bin_pending(n: int) -> int:
-    """Bucket de pedidos pendientes."""
+    """Bucket for pending orders."""
     if n == 0:
         return 0
     if n <= 2:
@@ -70,7 +70,7 @@ def bin_pending(n: int) -> int:
 
 
 def bin_ratio_urgent(r: float) -> int:
-    """Bucket de ratio de pedidos urgentes."""
+    """Bucket for urgent-order ratio."""
     if r <= 0.0:
         return 0
     if r <= 0.25:
@@ -83,7 +83,7 @@ def bin_ratio_urgent(r: float) -> int:
 
 
 def bin_free_riders(n: int) -> int:
-    """Bucket de riders libres."""
+    """Bucket for free riders."""
     if n == 0:
         return 0
     if n == 1:
@@ -94,7 +94,7 @@ def bin_free_riders(n: int) -> int:
 
 
 def bin_fatigue(avg: float) -> int:
-    """Bucket de fatiga media."""
+    """Bucket for average fatigue."""
     if avg < 1.0:
         return 0
     if avg < 2.5:
@@ -103,7 +103,7 @@ def bin_fatigue(avg: float) -> int:
 
 
 def bin_imbalance(std_deliveries: float) -> int:
-    """Bucket de desequilibrio de entregas entre riders."""
+    """Bucket for imbalance of deliveries across riders."""
     if std_deliveries < 0.5:
         return 0
     if std_deliveries < 1.5:
@@ -112,12 +112,12 @@ def bin_imbalance(std_deliveries: float) -> int:
 
 
 def bin_traffic(level: str) -> int:
-    """Bucket de tráfico global."""
+    """Bucket for global traffic level."""
     return {"low": 0, "medium": 1, "high": 2}.get(level, 0)
 
 
 def bin_closures(n: int) -> int:
-    """Bucket de cierres de calles activos."""
+    """Bucket for active road closures."""
     if n == 0:
         return 0
     if n == 1:
@@ -136,7 +136,7 @@ def make_state(
     traffic_level: str,
     closures: int,
 ) -> State:
-    """Construye el estado discretizado legacy usado por el simulador."""
+    """Build the legacy discretized state used by the simulator."""
     return (
         bin_time(t, episode_len),
         bin_pending(pending),

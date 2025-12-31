@@ -1,6 +1,6 @@
 """
-Wrapper legacy que delega a la evaluación factorizada.
-Mantiene constantes y firma compatible para código existente.
+Legacy wrapper delegating to the factored evaluation flow.
+Keeps action constants and a compatible signature for existing code.
 """
 from __future__ import annotations
 
@@ -25,10 +25,10 @@ def eval_all(
     base_seed: int = 7,
 ):
     """
-    Wrapper legacy que redirige a evaluate() del flujo factorizado.
+    Legacy wrapper that redirects to evaluate() from the factored flow.
     """
     warnings.warn(
-        "eval.py es legacy; usa eval_factored.evaluate/main",
+        "eval.py is legacy; use eval_factored.evaluate/main",
         DeprecationWarning,
         stacklevel=2,
     )
@@ -38,7 +38,7 @@ def eval_all(
 
 def main():
     warnings.warn(
-        "eval.py es legacy; redirigiendo a eval_factored.py",
+        "eval.py is legacy; redirecting to eval_factored.py",
         DeprecationWarning,
         stacklevel=2,
     )
