@@ -17,7 +17,8 @@ from simulation.simulator import Simulator, SimConfig
 from simulation.visualizer import Visualizer
 from core.factored_states import FactoredStateEncoder
 from core.factored_q_agent import FactoredQAgent
-from core.dispatch_policy import A_ASSIGN_ANY_NEAREST
+from core.heuristic_policy import HeuristicPolicy
+from core.shared_params import A_ASSIGN_ANY_NEAREST
 
 
 class TrainedFactoredPolicy:
@@ -115,7 +116,6 @@ def run_headless(sim: Simulator, policy_name: str, qpath: str, args):
 
     rng = random.Random(args.seed)
 
-    policy = None
     if policy_name == "trained":
         if not os.path.exists(qpath):
             raise FileNotFoundError(
@@ -123,6 +123,8 @@ def run_headless(sim: Simulator, policy_name: str, qpath: str, args):
             )
         policy = TrainedFactoredPolicy(qpath, episode_len=args.episode_len)
         policy.reset()
+    else:
+        policy = HeuristicPolicy()
 
     done = False
     total_reward = 0.0
@@ -135,10 +137,7 @@ def run_headless(sim: Simulator, policy_name: str, qpath: str, args):
 
         # Elegir acción
         snap = sim.snapshot()
-        if policy_name == "heuristic":
-            action = A_ASSIGN_ANY_NEAREST
-        else:
-            action = policy.choose_action_snapshot(snap)
+        action = policy.choose_action_snapshot(snap)
 
         reward, done = sim.step(action)
         total_reward += reward
@@ -190,8 +189,7 @@ def run_visual(sim: Simulator, policy_name: str, qpath: str, args):
     rng = random.Random(args.seed)
 
     if policy_name == "heuristic":
-        # Visualizer sin política usa heurística interna
-        vis = Visualizer(sim, policy=None, interval_ms=args.interval_ms)
+        policy = HeuristicPolicy()
     else:
         if not os.path.exists(qpath):
             raise FileNotFoundError(
@@ -201,8 +199,7 @@ def run_visual(sim: Simulator, policy_name: str, qpath: str, args):
         policy = TrainedFactoredPolicy(qpath, episode_len=args.episode_len)
         policy.reset()
 
-        # El Visualizer necesita un objeto con choose_action_snapshot
-        vis = Visualizer(sim, policy=policy, interval_ms=args.interval_ms)
+    vis = Visualizer(sim, policy=policy, interval_ms=args.interval_ms)
 
     print(f"Iniciando visualización (seed={args.seed}, policy={policy_name})...")
     print("Cierra la ventana para terminar.")

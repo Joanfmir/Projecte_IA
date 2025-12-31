@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Tuple
 from tqdm import trange, tqdm
 
 from simulation.simulator import Simulator, SimConfig
-from core.dispatch_policy import A_WAIT
+from core.shared_params import A_WAIT
 from core.factored_states import FactoredStateEncoder
 from core.factored_q_agent import FactoredQAgent, FactoredQConfig
 

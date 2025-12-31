@@ -22,7 +22,7 @@ from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional
 
 from simulation.simulator import Simulator, SimConfig
-from core.dispatch_policy import (
+from core.shared_params import (
     A_ASSIGN_ANY_NEAREST,
     A_ASSIGN_URGENT_NEAREST,
     A_WAIT,

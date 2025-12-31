@@ -9,15 +9,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Tuple, Optional, List, Set
 import random
-import statistics
 
 from core.road_graph import RoadGraph
 from core.route_planner import RoutePlanner
 from core.order_manager import OrderManager, Order
 from core.fleet_manager import FleetManager, Rider
 from core.assignment_engine import AssignmentEngine
-from core.dispatch_policy import (
-    make_state,
+from core.shared_params import (
     A_ASSIGN_URGENT_NEAREST,
     A_ASSIGN_ANY_NEAREST,
     A_WAIT,
@@ -694,39 +692,6 @@ class Simulator:
                     self._rebuild_plan_for_rider(r)
 
         return delivered_now, picked_up_count, distance_moved
-
-    # -------------------
-    # State + Reward
-    # -------------------
-    def compute_state(self) -> tuple:
-        """Calcula el vector de estado (o tupla discreta) para el agente."""
-        pending = len(self.om.get_pending_orders())
-        urgent = [
-            o
-            for o in self.om.get_pending_orders()
-            if o.is_urgent(self.t) or o.priority > 1
-        ]
-        urgent_ratio = (len(urgent) / pending) if pending > 0 else 0.0
-
-        free = len([r for r in self.fm.get_all() if r.can_take_more()])
-
-        fatigues = [r.fatigue for r in self.fm.get_all()]
-        avg_fat = sum(fatigues) / len(fatigues) if fatigues else 0.0
-
-        deliveries = [r.deliveries_done for r in self.fm.get_all()]
-        std_del = statistics.pstdev(deliveries) if len(deliveries) >= 2 else 0.0
-
-        return make_state(
-            t=self.t,
-            episode_len=self.cfg.episode_len,
-            pending=pending,
-            urgent_ratio=urgent_ratio,
-            free_riders=free,
-            avg_fatigue=avg_fat,
-            std_deliveries=std_del,
-            traffic_level=self.traffic_level,
-            closures=self.graph.count_closed_directed(),
-        )
 
     def compute_reward(
         self,

@@ -26,7 +26,7 @@ from matplotlib.patches import Rectangle, Patch
 from matplotlib.lines import Line2D
 from matplotlib.collections import LineCollection
 
-from core.dispatch_policy import A_ASSIGN_ANY_NEAREST
+from core.shared_params import A_ASSIGN_ANY_NEAREST
 
 
 def ticks_to_time(t: int, episode_len: int) -> str:
@@ -448,15 +448,18 @@ class Visualizer:
         3. Recoge el snapshot y actualiza los gráficos.
         """
         # acción
-        if self.policy is not None:
-            snap0 = self.sim.snapshot()
-            if hasattr(self.policy, "choose_action_snapshot"):
-                a = self.policy.choose_action_snapshot(snap0)
-            else:
-                s = self.sim.compute_state()
-                a = self.policy.choose_action(s)
-        else:
-            a = A_ASSIGN_ANY_NEAREST
+        if self.policy is None:
+            raise TypeError(
+                "Policy must implement choose_action_snapshot(snapshot). "
+                "Supported modes: FactoredQAgent or HeuristicPolicy."
+            )
+        snap0 = self.sim.snapshot()
+        if not hasattr(self.policy, "choose_action_snapshot"):
+            raise TypeError(
+                "Policy must implement choose_action_snapshot(snapshot). "
+                "Supported modes: FactoredQAgent or HeuristicPolicy."
+            )
+        a = self.policy.choose_action_snapshot(snap0)
 
         _, done = self.sim.step(a)
 
