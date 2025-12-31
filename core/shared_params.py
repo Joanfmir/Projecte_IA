@@ -1,15 +1,18 @@
-"""
-Shared action constants for the factored agent stack and heuristic policy.
+# core/shared_params.py
+"""Constantes de acción compartidas entre el agente factorizado y la política heurística.
+
+Estas constantes definen el espacio de acciones del agente y son consumidas por
+el simulador, los agentes y los tests.
 """
 from __future__ import annotations
 
-# Available actions (consumed by simulator, agents, and tests)
-A_ASSIGN_URGENT_NEAREST = 0
-A_ASSIGN_ANY_NEAREST = 1
-A_WAIT = 2
-A_REPLAN_TRAFFIC = 3
+# Acciones disponibles
+A_ASSIGN_URGENT_NEAREST = 0  # Asignar pedido urgente al rider más cercano.
+A_ASSIGN_ANY_NEAREST = 1     # Asignar cualquier pedido pendiente al más cercano.
+A_WAIT = 2                   # No hacer nada este tick.
+A_REPLAN_TRAFFIC = 3         # Forzar replanificación por cambio de tráfico.
 
-# Full action set reference
+# Lista de todas las acciones
 ALL_ACTIONS = [
     A_ASSIGN_URGENT_NEAREST,
     A_ASSIGN_ANY_NEAREST,
