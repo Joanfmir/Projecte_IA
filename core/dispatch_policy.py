@@ -11,6 +11,7 @@ from core.shared_params import (  # re-exported legacy constants/helpers
     A_WAIT,
     ALL_ACTIONS,
     QLearningConfig,
+    State,
     bin_closures,
     bin_fatigue,
     bin_free_riders,
@@ -22,7 +23,6 @@ from core.shared_params import (  # re-exported legacy constants/helpers
     make_state,
 )
 
-State = Tuple[int, int, int, int, int, int, int, int]  # bins
 Action = int
 
 
